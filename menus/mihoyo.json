@@ -1,0 +1,25 @@
+{
+  "menuLabel": "&Game",
+  "bookmarks": [
+    {
+      "type": "link",
+      "title": "Genshin Impact",
+      "url": "https://ys.mihoyo.com/cloud/#/",
+      "shortcut": "CmdOrCtrl+1"
+    },
+    {
+      "type": "link",
+      "title": "Honkai: Star Rail",
+      "url": "https://sr.mihoyo.com/cloud/#/",
+      "shortcut": "CmdOrCtrl+2"
+    },
+    {
+      "type": "separator"
+    },
+    {
+      "type": "link",
+      "title": "miHoYo Cloud Game",
+      "url": "https://mhyy.mihoyo.com"
+    }
+  ]
+}
