@@ -6,7 +6,7 @@ nativefier "https://www.migufun.com/middleh5/ucenter" dist \
   --single-instance \
   --fast-quit \
   --verbose \
-  --electron-version "36.2.0" \
+  --electron-version "36.3.2" \
 
 
 nativefier "https://ys.mihoyo.com/cloud/#/" dist \
@@ -18,4 +18,4 @@ nativefier "https://ys.mihoyo.com/cloud/#/" dist \
   --single-instance \
   --fast-quit \
   --verbose \
-  --electron-version "36.2.0" \
+  --electron-version "36.3.2" \
