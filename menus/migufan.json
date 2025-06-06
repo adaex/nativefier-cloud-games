@@ -1,0 +1,17 @@
+{
+  "menuLabel": "&Favorite",
+  "bookmarks": [
+    {
+      "type": "link",
+      "title": "User Center",
+      "url": "https://www.migufun.com/middleh5/ucenter/",
+      "shortcut": "CmdOrCtrl+1"
+    },
+    {
+      "type": "link",
+      "title": "Home Page",
+      "url": "https://www.migufun.com/middleh5/",
+      "shortcut": "CmdOrCtrl+2"
+    }
+  ]
+}
