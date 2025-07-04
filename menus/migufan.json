@@ -4,13 +4,13 @@
     {
       "type": "link",
       "title": "User Center",
-      "url": "https://www.migufun.com/middleh5/ucenter/",
+      "url": "https://www.migufun.com/middlepc/ucenter",
       "shortcut": "CmdOrCtrl+1"
     },
     {
       "type": "link",
       "title": "Home Page",
-      "url": "https://www.migufun.com/middleh5/",
+      "url": "https://www.migufun.com/middlepc/",
       "shortcut": "CmdOrCtrl+2"
     }
   ]

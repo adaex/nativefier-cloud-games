@@ -7,7 +7,7 @@ ELECTRON_VERSION=$(npm view electron version --registry https://registry.npmmirr
 
 echo "使用 Electron 版本: $ELECTRON_VERSION"
 
-nativefier "https://www.migufun.com/middleh5/ucenter" dist \
+nativefier "https://www.migufun.com/middlepc/ucenter" dist \
   --name "MiGuFun" \
   --icon "icons/migufun.icns" \
   --bookmarks-menu "menus/migufan.json" \
