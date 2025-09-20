@@ -4,14 +4,33 @@
     {
       "type": "link",
       "title": "User Center",
-      "url": "https://www.migufun.com/middlepc/ucenter",
-      "shortcut": "CmdOrCtrl+1"
+      "url": "https://www.migufun.com/middlepc/ucenter"
     },
     {
       "type": "link",
       "title": "Home Page",
-      "url": "https://www.migufun.com/middlepc/",
-      "shortcut": "CmdOrCtrl+2"
+      "url": "https://www.migufun.com/middlepc/"
+    },
+    {
+      "type": "separator"
+    },
+    {
+      "type": "link",
+      "title": "Genshin Impact",
+      "url": "https://www.migufun.com/miguplay/middleGame/gameplay/400935890",
+      "shortcut": "CmdOrCtrl+3"
+    },
+    {
+      "type": "link",
+      "title": "Honkai: Star Rail",
+      "url": "https://www.migufun.com/miguplay/middleGame/gameplay/400831879",
+      "shortcut": "CmdOrCtrl+3"
+    },
+    {
+      "type": "link",
+      "title": "Zenless Zone Zero",
+      "url": "https://www.migufun.com/miguplay/middleGame/gameplay/650962845",
+      "shortcut": "CmdOrCtrl+3"
     }
   ]
 }
