@@ -74,8 +74,8 @@ function install(name) {
 }
 
 // ---- 执行 ----
-build('https://www.migufun.com/middlepc/ucenter', 'MiGuFun', 'icons/migufun.icns', 'menus/migufan.json');
-build('https://ys.mihoyo.com/cloud/#/', 'miHoYo', 'icons/mihoyo.icns', 'menus/mihoyo.json');
+build('https://www.migufun.com/middlepc/ucenter', 'MiGuFun', 'icons/migufan.png', 'menus/migufan.json');
+build('https://ys.mihoyo.com/cloud/#/', 'miHoYo', 'icons/yunyuanshen.png', 'menus/mihoyo.json');
 
 install('MiGuFun');
 install('miHoYo');
