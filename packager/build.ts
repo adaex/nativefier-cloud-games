@@ -113,7 +113,7 @@ export async function build(configPath: string): Promise<string[]> {
     const pkgPath = path.join(tmpDir, 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     pkg.version = electronVersion;
-    fs.writeFileSync(pkgPath, JSON.stringify(pkg));
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 
     fs.writeFileSync(
       path.join(tmpDir, 'app.json'),
