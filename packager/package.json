@@ -1,0 +1,13 @@
+{
+  "name": "packager",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@electron/packager": "^18.3.5",
+    "tsx": "^4.19.0"
+  }
+}
