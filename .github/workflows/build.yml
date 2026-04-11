@@ -1,0 +1,58 @@
+name: Build & Release
+
+on:
+  schedule:
+    - cron: '0 10 * * 5' # 每周五 UTC 10:00 (北京时间 18:00)
+  workflow_dispatch: # 手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: packager
+        run: npm ci
+
+      - name: Get Electron version
+        id: electron
+        run: echo "version=$(npm view electron version)" >> "$GITHUB_OUTPUT"
+
+      - name: Build apps
+        working-directory: packager
+        run: npx tsx src/cli.ts ../apps/*.json
+
+      - name: Zip apps
+        run: |
+          cd dist
+          for dir in *-darwin-arm64; do
+            app=$(find "$dir" -maxdepth 1 -name "*.app" -type d)
+            if [ -n "$app" ]; then
+              app_name=$(basename "$app" .app)
+              ditto -c -k --keepParent "$app" "${app_name}-darwin-arm64.zip"
+              echo "Zipped: ${app_name}-darwin-arm64.zip"
+            fi
+          done
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.electron.outputs.version }}"
+          # 同一 Electron 版本已有 Release 则跳过
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "Release $tag already exists, skipping"
+            exit 0
+          fi
+          gh release create "$tag" dist/*.zip \
+            --title "Electron ${{ steps.electron.outputs.version }}" \
+            --notes "基于 Electron ${{ steps.electron.outputs.version }} 自动构建 macOS arm64 版本" \
+            --latest
