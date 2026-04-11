@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec node "$(dirname "$0")/build.js"
+cd "$(dirname "$0")/packager"
+exec npx tsx src/cli.ts ../apps/*.json
