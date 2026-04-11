@@ -32,13 +32,14 @@ jobs:
 
       - name: Zip apps
         run: |
-          cd dist
-          for dir in *-darwin-arm64; do
-            app=$(find "$dir" -maxdepth 1 -name "*.app" -type d)
+          for cfg in apps/*.json; do
+            app_id=$(basename "$cfg" .json)
+            app_name=$(node -e "process.stdout.write(require('./$cfg').name)")
+            app_dir="dist/${app_name}-darwin-arm64"
+            app=$(find "$app_dir" -maxdepth 1 -name "*.app" -type d | head -1)
             if [ -n "$app" ]; then
-              app_name=$(basename "$app" .app)
-              ditto -c -k --keepParent "$app" "${app_name}-darwin-arm64.zip"
-              echo "Zipped: ${app_name}-darwin-arm64.zip"
+              ditto -c -k --keepParent "$app" "dist/${app_id}-darwin-arm64.zip"
+              echo "Zipped: ${app_id}-darwin-arm64.zip"
             fi
           done
 
@@ -47,10 +48,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v${{ steps.electron.outputs.version }}"
-          # 同一 Electron 版本已有 Release 则跳过
+          # 同一 Electron 版本已有 Release 则删除重建（上次可能上传失败）
           if gh release view "$tag" > /dev/null 2>&1; then
-            echo "Release $tag already exists, skipping"
-            exit 0
+            gh release delete "$tag" --yes
+            git push --delete origin "$tag" 2>/dev/null || true
           fi
           gh release create "$tag" dist/*.zip \
             --title "Electron ${{ steps.electron.outputs.version }}" \
