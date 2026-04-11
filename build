@@ -2,3 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 npx tsx packager/cli.ts webs/*/config.json
+
+# 安装到 /Applications
+for app in dist/*/*.app; do
+  [ -d "$app" ] || continue
+  name=$(basename "$app")
+  rm -rf "/Applications/$name"
+  cp -R "$app" "/Applications/$name"
+  echo "已安装: /Applications/$name"
+done

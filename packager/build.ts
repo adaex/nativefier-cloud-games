@@ -57,41 +57,6 @@ function pngToIcns(pngPath: string, tmpDir: string): string {
   return icnsPath;
 }
 
-function patchMacLocale(appOutDir: string, appName: string): void {
-  const appBundle = fs.readdirSync(appOutDir).find((f) => f.endsWith('.app'));
-  if (!appBundle) return;
-  const contentsDir = path.join(appOutDir, appBundle, 'Contents');
-  const resDir = path.join(contentsDir, 'Resources');
-  const plistPath = path.join(contentsDir, 'Info.plist');
-  const pb = (cmd: string) =>
-    execFileSync('/usr/libexec/PlistBuddy', ['-c', cmd, plistPath], { stdio: 'pipe' });
-
-  // 删除空的非中文 lproj，避免 macOS 匹配到英文等空目录
-  for (const entry of fs.readdirSync(resDir)) {
-    if (entry.endsWith('.lproj') && entry !== 'zh_CN.lproj') {
-      const lprojPath = path.join(resDir, entry);
-      if (fs.readdirSync(lprojPath).length === 0) {
-        fs.rmSync(lprojPath, { recursive: true });
-      }
-    }
-  }
-
-  // 写入 zh_CN.lproj/InfoPlist.strings
-  const lprojDir = path.join(resDir, 'zh_CN.lproj');
-  fs.mkdirSync(lprojDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(lprojDir, 'InfoPlist.strings'),
-    `CFBundleDisplayName = "${appName}";\nCFBundleName = "${appName}";\n`,
-  );
-
-  // 修改 Info.plist
-  pb('Add :CFBundleDevelopmentRegion string zh_CN');
-  pb('Add :CFBundleLocalizations array');
-  pb('Add :CFBundleLocalizations:0 string zh_CN');
-
-  log.ok(`已写入中文本地化: ${appName}`);
-}
-
 export async function build(configPath: string): Promise<string[]> {
   const configDir = path.dirname(path.resolve(configPath));
   const config: AppConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -110,8 +75,6 @@ export async function build(configPath: string): Promise<string[]> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'packager-'));
   try {
     const templateDir = path.join(import.meta.dirname, 'template');
-
-    log.info(`准备应用模板: ${tmpDir}`);
     fs.cpSync(templateDir, tmpDir, { recursive: true });
 
     // app 版本号与 Electron 版本对齐
@@ -148,17 +111,11 @@ export async function build(configPath: string): Promise<string[]> {
       out: outDir,
       overwrite: true,
       icon,
+      quiet: true,
       download: ELECTRON_MIRROR
         ? { mirrorOptions: { mirror: ELECTRON_MIRROR } }
         : undefined,
     });
-
-    // macOS: 写入中文本地化，让系统菜单显示中文
-    if (platform === 'darwin') {
-      for (const appPath of appPaths) {
-        patchMacLocale(appPath, config.name);
-      }
-    }
 
     for (const p of appPaths) {
       log.ok(`输出: ${p}`);

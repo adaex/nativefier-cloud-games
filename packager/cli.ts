@@ -1,3 +1,4 @@
+import path from 'path';
 import { build } from './build.js';
 
 const configPaths = process.argv.slice(2);
@@ -8,7 +9,11 @@ if (configPaths.length === 0) {
 }
 
 let total = 0;
-for (const configPath of configPaths) {
+for (let i = 0; i < configPaths.length; i++) {
+  const configPath = configPaths[i];
+  const id = path.basename(path.dirname(configPath));
+  if (i > 0) console.log();
+  console.log(`[${i + 1}/${configPaths.length}] ${id}`);
   try {
     const paths = await build(configPath);
     total += paths.length;
