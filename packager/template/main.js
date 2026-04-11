@@ -6,9 +6,10 @@ const config = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'app.json'), 'utf8'),
 );
 
-app.whenReady().then(() => {
-  const name = config.name;
+app.commandLine.appendSwitch('lang', 'zh-CN');
 
+app.whenReady().then(() => {
+  const { name } = config;
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
@@ -32,7 +33,6 @@ app.whenReady().then(() => {
           { label: '剪切', role: 'cut' },
           { label: '复制', role: 'copy' },
           { label: '粘贴', role: 'paste' },
-          { label: '删除', role: 'delete' },
           { label: '全选', role: 'selectAll' },
         ],
       },
@@ -45,8 +45,6 @@ app.whenReady().then(() => {
           { label: '实际大小', role: 'resetZoom' },
           { label: '放大', role: 'zoomIn' },
           { label: '缩小', role: 'zoomOut' },
-          { type: 'separator' },
-          { label: '进入全屏幕', role: 'togglefullscreen' },
         ],
       },
       {
@@ -67,16 +65,8 @@ app.whenReady().then(() => {
     width: 1280,
     height: 800,
     title: name,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
   });
-
-  win.on('page-title-updated', (e) => {
-    e.preventDefault();
-  });
-
+  win.setFullScreen(true);
   win.loadURL(config.url);
 });
 
