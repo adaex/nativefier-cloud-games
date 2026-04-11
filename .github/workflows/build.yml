@@ -19,7 +19,6 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        working-directory: packager
         run: npm ci
 
       - name: Get Electron version
@@ -27,12 +26,11 @@ jobs:
         run: echo "version=$(npm view electron version)" >> "$GITHUB_OUTPUT"
 
       - name: Build apps
-        working-directory: packager
-        run: npx tsx src/cli.ts ../apps/*/config.json
+        run: npx tsx packager/cli.ts webs/*/config.json
 
       - name: Zip apps
         run: |
-          for dir in apps/*/; do
+          for dir in webs/*/; do
             app_id=$(basename "$dir")
             app_name=$(node -e "process.stdout.write(require('./${dir}config.json').name)")
             app_dir="dist/${app_name}-darwin-arm64"
