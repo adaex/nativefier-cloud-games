@@ -12,9 +12,9 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
@@ -28,13 +28,13 @@ jobs:
 
       - name: Build apps
         working-directory: packager
-        run: npx tsx src/cli.ts ../apps/*.json
+        run: npx tsx src/cli.ts ../apps/*/config.json
 
       - name: Zip apps
         run: |
-          for cfg in apps/*.json; do
-            app_id=$(basename "$cfg" .json)
-            app_name=$(node -e "process.stdout.write(require('./$cfg').name)")
+          for dir in apps/*/; do
+            app_id=$(basename "$dir")
+            app_name=$(node -e "process.stdout.write(require('./${dir}config.json').name)")
             app_dir="dist/${app_name}-darwin-arm64"
             app=$(find "$app_dir" -maxdepth 1 -name "*.app" -type d | head -1)
             if [ -n "$app" ]; then

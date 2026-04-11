@@ -1,7 +1,0 @@
-{
-  "name": "云原神",
-  "id": "com.electron.nativefier.mihoyo-nativefier-0dfa3a",
-  "url": "https://ys.mihoyo.com/cloud/#/",
-  "icon": "../icons/yunyuanshen.png",
-  "out": "../dist"
-}

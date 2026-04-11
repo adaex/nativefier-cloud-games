@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/packager"
-exec npx tsx src/cli.ts ../apps/*.json
+exec npx tsx src/cli.ts ../apps/*/config.json

@@ -14,11 +14,9 @@ const ELECTRON_MIRROR = process.env.CI
 export interface AppConfig {
   name: string;
   url: string;
-  id?: string;
   icon?: string;
   platform?: string;
   arch?: string;
-  out?: string;
 }
 
 const log = {
@@ -98,10 +96,12 @@ export async function build(configPath: string): Promise<string[]> {
     throw new Error('配置文件必须包含 name 和 url 字段');
   }
 
+  const id = path.basename(configDir);
+  const bundleId = `com.electron.webapp.${id}`;
   const electronVersion = getElectronVersion();
   const platform = config.platform ?? process.platform;
   const arch = config.arch ?? os.arch();
-  const outDir = path.resolve(configDir, config.out ?? './dist');
+  const outDir = path.resolve(configDir, '../../dist');
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'packager-'));
   try {
@@ -116,22 +116,22 @@ export async function build(configPath: string): Promise<string[]> {
     );
 
     let icon: string | undefined;
-    if (config.icon) {
-      const iconSrc = path.resolve(configDir, config.icon);
-      if (!fs.existsSync(iconSrc)) {
-        throw new Error(`图标文件不存在: ${iconSrc}`);
-      } else if (platform === 'darwin' && iconSrc.endsWith('.png')) {
+    const iconSrc = config.icon
+      ? path.resolve(configDir, config.icon)
+      : path.join(configDir, 'icon.png');
+    if (fs.existsSync(iconSrc)) {
+      if (platform === 'darwin' && iconSrc.endsWith('.png')) {
         icon = pngToIcns(iconSrc, tmpDir);
       } else {
         icon = iconSrc;
       }
     }
 
-    log.info(`开始构建: ${config.name}`);
+    log.info(`开始构建: ${config.name} (${id})`);
     const appPaths = await packager({
       dir: tmpDir,
       name: config.name,
-      appBundleId: config.id,
+      appBundleId: bundleId,
       electronVersion,
       platform: platform as any,
       arch: arch as any,
