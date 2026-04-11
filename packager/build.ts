@@ -61,12 +61,11 @@ function patchMacLocale(appOutDir: string, appName: string): void {
   const pb = (cmd: string) =>
     execFileSync('/usr/libexec/PlistBuddy', ['-c', cmd, plistPath], { stdio: 'pipe' });
 
-  // 删除所有非中文的空 lproj 目录，让系统不再 fallback 到英文
+  // 删除空的非中文 lproj，避免 macOS 匹配到英文等空目录
   for (const entry of fs.readdirSync(resDir)) {
     if (entry.endsWith('.lproj') && entry !== 'zh_CN.lproj') {
       const lprojPath = path.join(resDir, entry);
-      const files = fs.readdirSync(lprojPath);
-      if (files.length === 0) {
+      if (fs.readdirSync(lprojPath).length === 0) {
         fs.rmSync(lprojPath, { recursive: true });
       }
     }
@@ -109,6 +108,12 @@ export async function build(configPath: string): Promise<string[]> {
 
     log.info(`准备应用模板: ${tmpDir}`);
     fs.cpSync(templateDir, tmpDir, { recursive: true });
+
+    // app 版本号与 Electron 版本对齐
+    const pkgPath = path.join(tmpDir, 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    pkg.version = electronVersion;
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg));
 
     fs.writeFileSync(
       path.join(tmpDir, 'app.json'),

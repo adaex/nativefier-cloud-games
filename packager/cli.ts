@@ -3,7 +3,7 @@ import { build } from './build.js';
 const configPaths = process.argv.slice(2);
 
 if (configPaths.length === 0) {
-  console.error('用法: npx tsx src/cli.ts <config.json> [config2.json ...]');
+  console.error('用法: npx tsx packager/cli.ts <config.json> [config2.json ...]');
   process.exit(1);
 }
 
