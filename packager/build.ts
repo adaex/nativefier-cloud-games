@@ -105,7 +105,7 @@ export async function build(configPath: string): Promise<string[]> {
   const electronVersion = getElectronVersion();
   const platform = config.platform ?? process.platform;
   const arch = config.arch ?? os.arch();
-  const outDir = path.resolve(configDir, '../../dist');
+  const outDir = path.join(import.meta.dirname, '..', 'dist');
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'packager-'));
   try {
@@ -143,8 +143,8 @@ export async function build(configPath: string): Promise<string[]> {
       name: config.name,
       appBundleId: bundleId,
       electronVersion,
-      platform: platform as any,
-      arch: arch as any,
+      platform: platform,
+      arch: arch,
       out: outDir,
       overwrite: true,
       icon,
