@@ -27,6 +27,8 @@ jobs:
 
       - name: Build apps
         run: npx tsx packager/cli.ts webs/*/config.json
+        env:
+          ELECTRON_VERSION: ${{ steps.electron.outputs.version }}
 
       - name: Zip apps
         run: |

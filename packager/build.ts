@@ -29,6 +29,11 @@ let cachedElectronVersion: string | undefined;
 
 function getElectronVersion(): string {
   if (cachedElectronVersion) return cachedElectronVersion;
+  if (process.env.ELECTRON_VERSION) {
+    cachedElectronVersion = process.env.ELECTRON_VERSION;
+    log.ok(`Electron 版本 (env): ${cachedElectronVersion}`);
+    return cachedElectronVersion;
+  }
   log.info('正在获取最新 Electron 版本...');
   cachedElectronVersion = execFileSync(
     'npm', ['view', 'electron', 'version', '--registry', NPM_REGISTRY],
