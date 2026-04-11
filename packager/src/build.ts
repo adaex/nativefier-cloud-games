@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -32,8 +32,8 @@ let cachedElectronVersion: string | undefined;
 function getElectronVersion(): string {
   if (cachedElectronVersion) return cachedElectronVersion;
   log.info('正在获取最新 Electron 版本...');
-  cachedElectronVersion = execSync(
-    `npm view electron version --registry ${NPM_REGISTRY}`,
+  cachedElectronVersion = execFileSync(
+    'npm', ['view', 'electron', 'version', '--registry', NPM_REGISTRY],
     { encoding: 'utf8' },
   ).trim();
   log.ok(`Electron 版本: ${cachedElectronVersion}`);

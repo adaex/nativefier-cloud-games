@@ -16,8 +16,6 @@ app.whenReady().then(() => {
         submenu: [
           { label: `关于 ${name}`, role: 'about' },
           { type: 'separator' },
-          { label: '设置…', role: 'appMenu', accelerator: 'CmdOrCtrl+,', enabled: false },
-          { type: 'separator' },
           { label: `隐藏 ${name}`, role: 'hide' },
           { label: '隐藏其他', role: 'hideOthers' },
           { label: '显示全部', role: 'unhide' },
