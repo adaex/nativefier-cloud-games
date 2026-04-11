@@ -54,6 +54,6 @@ jobs:
             git push --delete origin "$tag" 2>/dev/null || true
           fi
           gh release create "$tag" dist/*.zip \
-            --title "Electron ${{ steps.electron.outputs.version }}" \
-            --notes "基于 Electron ${{ steps.electron.outputs.version }} 自动构建 macOS arm64 版本" \
+            --title "$tag" \
+            --notes "自动构建 macOS arm64 版本" \
             --latest
