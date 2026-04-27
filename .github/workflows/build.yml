@@ -38,7 +38,19 @@ jobs:
             app_dir="dist/${app_name}-darwin-arm64"
             app=$(find "$app_dir" -maxdepth 1 -name "*.app" -type d | head -1)
             if [ -n "$app" ]; then
-              ditto -c -k --keepParent "$app" "dist/${app_id}-darwin-arm64.zip"
+              printf '%s\n' '#!/usr/bin/env bash' \
+                'set -euo pipefail' \
+                'cd "$(dirname "$0")"' \
+                'app=$(find . -maxdepth 1 -name "*.app" -type d | head -1)' \
+                'if [ -z "$app" ]; then echo "未找到 .app"; exit 1; fi' \
+                'name=$(basename "$app")' \
+                'xattr -dr com.apple.quarantine "$app"' \
+                'rm -rf "/Applications/$name"' \
+                'cp -R "$app" "/Applications/$name"' \
+                'echo "已安装: /Applications/$name"' \
+                > "$app_dir/install.command"
+              chmod +x "$app_dir/install.command"
+              ditto -c -k "$app_dir" "dist/${app_id}-darwin-arm64.zip"
               echo "Zipped: ${app_id}-darwin-arm64.zip"
             fi
           done

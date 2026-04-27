@@ -112,7 +112,6 @@ export async function build(configPath: string): Promise<string[]> {
       overwrite: true,
       icon,
       quiet: true,
-      osxSign: platform === 'darwin' ? { identity: '-' } : undefined,
       download: ELECTRON_MIRROR
         ? { mirrorOptions: { mirror: ELECTRON_MIRROR } }
         : undefined,
