@@ -48,8 +48,8 @@ jobs:
                 'rm -rf "/Applications/$name"' \
                 'cp -R "$app" "/Applications/$name"' \
                 'echo "已安装: /Applications/$name"' \
-                > "$app_dir/install.command"
-              chmod +x "$app_dir/install.command"
+                > "$app_dir/install.sh"
+              chmod +x "$app_dir/install.sh"
               ditto -c -k "$app_dir" "dist/${app_id}-darwin-arm64.zip"
               echo "Zipped: ${app_id}-darwin-arm64.zip"
             fi
@@ -67,5 +67,5 @@ jobs:
           fi
           gh release create "$tag" dist/*.zip \
             --title "$tag" \
-            --notes "自动构建 macOS arm64 版本" \
+            --notes "" \
             --latest
