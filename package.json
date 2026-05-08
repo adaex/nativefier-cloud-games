@@ -2,7 +2,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@electron/packager": "^18.3.5",
-    "tsx": "^4.19.0"
+    "@electron/packager": "^20.0.0",
+    "tsx": "^4.21.0"
   }
 }
