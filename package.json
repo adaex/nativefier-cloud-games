@@ -1,6 +1,9 @@
 {
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@electron/packager": "^20.0.0",
     "tsx": "^4.21.0"
