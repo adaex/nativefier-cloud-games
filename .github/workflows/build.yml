@@ -58,8 +58,38 @@ jobs:
       - name: Create Release
         env:
           GH_TOKEN: ${{ github.token }}
+          ELECTRON_VER: ${{ steps.electron.outputs.version }}
         run: |
-          tag="v${{ steps.electron.outputs.version }}"
+          tag="v${ELECTRON_VER}"
+
+          # 生成应用列表
+          apps=""
+          for dir in webs/*/; do
+            app_name=$(node -e "process.stdout.write(require('./${dir}config.json').name)")
+            app_url=$(node -e "process.stdout.write(require('./${dir}config.json').url)")
+            apps="${apps}- **${app_name}** — ${app_url}"$'\n'
+          done
+
+          # 写入 Release notes 文件
+          {
+            echo "基于 Electron ${ELECTRON_VER} 构建的云游戏客户端。"
+            echo ""
+            echo "## 包含应用"
+            echo ""
+            printf "%s" "$apps"
+            echo ""
+            echo "## 安装方式"
+            echo ""
+            echo "1. 下载对应的 zip 文件并解压"
+            echo '2. 在解压目录中运行 `./install.sh`（会自动移除隔离标记并复制到 /Applications）'
+            echo ""
+            echo "## 环境"
+            echo ""
+            echo "- Platform: macOS (darwin-arm64)"
+            echo "- Electron: ${ELECTRON_VER}"
+            echo "- Node: $(node --version)"
+          } > /tmp/release-notes.md
+
           # 同一 Electron 版本已有 Release 则删除重建（上次可能上传失败）
           if gh release view "$tag" > /dev/null 2>&1; then
             gh release delete "$tag" --yes
@@ -67,5 +97,5 @@ jobs:
           fi
           gh release create "$tag" dist/*.zip \
             --title "$tag" \
-            --notes "" \
+            --notes-file /tmp/release-notes.md \
             --latest
