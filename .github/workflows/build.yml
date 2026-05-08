@@ -26,7 +26,9 @@ jobs:
         run: echo "version=$(npm view electron version)" >> "$GITHUB_OUTPUT"
 
       - name: Build apps
-        run: npx tsx packager/cli.ts webs/*/config.json
+        run: |
+          echo "start=$(date +%s)" >> "$GITHUB_ENV"
+          npx tsx packager/cli.ts webs/*/config.json
         env:
           ELECTRON_VERSION: ${{ steps.electron.outputs.version }}
 
@@ -71,23 +73,29 @@ jobs:
           done
 
           # 写入 Release notes 文件
+          elapsed=$(( $(date +%s) - start ))
+          build_time=$(date -u "+%Y-%m-%d %H:%M UTC")
           {
             echo "基于 Electron ${ELECTRON_VER} 构建的云游戏客户端。"
             echo ""
-            echo "## 包含应用"
+            echo "### 包含应用"
             echo ""
             printf "%s" "$apps"
             echo ""
-            echo "## 安装方式"
+            echo "### 安装方式"
             echo ""
             echo "1. 下载对应的 zip 文件并解压"
             echo '2. 在解压目录中运行 `./install.sh`（会自动移除隔离标记并复制到 /Applications）'
             echo ""
-            echo "## 环境"
+            echo "### 构建信息"
             echo ""
-            echo "- Platform: macOS (darwin-arm64)"
-            echo "- Electron: ${ELECTRON_VER}"
-            echo "- Node: $(node --version)"
+            echo "| 项目 | 值 |"
+            echo "|------|-----|"
+            echo "| Platform | macOS (darwin-arm64) |"
+            echo "| Electron | ${ELECTRON_VER} |"
+            echo "| Node | $(node --version) |"
+            echo "| 构建时间 | ${build_time} |"
+            echo "| 耗时 | ${elapsed}s |"
           } > /tmp/release-notes.md
 
           # 同一 Electron 版本已有 Release 则删除重建（上次可能上传失败）
