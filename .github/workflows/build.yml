@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v6
 
@@ -19,9 +19,7 @@ jobs:
           node-version: 24
 
       - name: Install dependencies
-        run: |
-          npm cache clean --force
-          npm install --prefer-offline --no-audit
+        run: npm ci
 
       - name: Get Electron version
         id: electron
