@@ -74,7 +74,7 @@ jobs:
 
           # 写入 Release notes 文件
           elapsed=$(( $(date +%s) - start ))
-          build_time=$(date -u "+%Y-%m-%d %H:%M UTC")
+          build_time=$(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M CST")
           {
             echo "基于 Electron ${ELECTRON_VER} 构建的云游戏客户端。"
             echo ""
