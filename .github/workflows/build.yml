@@ -89,13 +89,11 @@ jobs:
             echo ""
             echo "### 构建信息"
             echo ""
-            echo "| 项目 | 值 |"
-            echo "|------|-----|"
-            echo "| Platform | macOS (darwin-arm64) |"
-            echo "| Electron | ${ELECTRON_VER} |"
-            echo "| Node | $(node --version) |"
-            echo "| 构建时间 | ${build_time} |"
-            echo "| 耗时 | ${elapsed}s |"
+            echo "- Platform: macOS (darwin-arm64)"
+            echo "- Electron: ${ELECTRON_VER}"
+            echo "- Node: $(node --version)"
+            echo "- 构建时间: ${build_time}"
+            echo "- 耗时: ${elapsed}s"
           } > /tmp/release-notes.md
 
           # 同一 Electron 版本已有 Release 则删除重建（上次可能上传失败）
