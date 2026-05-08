@@ -25,7 +25,10 @@ jobs:
         id: electron
         run: |
           ver=$(npm view electron version)
-          chromium=$(npm view electron chromium --registry https://registry.npmjs.org 2>/dev/null || echo "unknown")
+          chromium=$(curl -s "https://releases.electronjs.org/releases.json" | node -e "
+            const r=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(x=>x.version==='$ver');
+            process.stdout.write(r?.chrome||'unknown');
+          ")
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "chromium=$chromium" >> "$GITHUB_OUTPUT"
 
