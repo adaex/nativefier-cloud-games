@@ -35,7 +35,7 @@ jobs:
       - name: Build apps
         run: |
           echo "start=$(date +%s)" >> "$GITHUB_ENV"
-          npx tsx packager/cli.ts webs/*/config.json
+          node --import tsx packager/cli.ts webs/*/config.json
         env:
           ELECTRON_VERSION: ${{ steps.electron.outputs.version }}
 
