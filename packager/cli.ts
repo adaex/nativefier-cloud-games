@@ -27,4 +27,7 @@ async function main() {
   console.log(`\n✅ 全部完成，共 ${total} 个包`);
 }
 
-main();
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
