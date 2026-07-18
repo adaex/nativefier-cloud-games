@@ -18,7 +18,7 @@ set -euo pipefail
 REPO="adaex/nativefier-cloud-games"
 MIRROR="https://v6.gh-proxy.org"
 ASSET_SUFFIX="-darwin-arm64.zip"
-MANIFEST_ASSET="manifest.json"          # CI 上传到 release 的精简 manifest 显示名
+MANIFEST_ASSET="release-manifest.json"  # CI 上传到 release 的精简 manifest（供 --list 映射名称/URL）
 
 # ---------------------------------------------------------------------------
 # 函数定义（须在调用前）

@@ -114,8 +114,8 @@ jobs:
             gh release delete "$tag" --yes
             git push --delete origin "$tag" 2>/dev/null || true
           fi
-          # release-manifest.json 以显示名 manifest.json 上传（本地名避开 dist/*.zip glob）
-          gh release create "$tag" dist/*.zip 'dist/release-manifest.json#manifest.json' \
+          # release-manifest.json 供安装器 --list 映射（本地名避开 dist/*.zip glob）
+          gh release create "$tag" dist/*.zip dist/release-manifest.json \
             --title "$tag" \
             --notes-file /tmp/release-notes.md \
             --latest
