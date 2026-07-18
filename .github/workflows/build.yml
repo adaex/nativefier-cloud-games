@@ -35,34 +35,22 @@ jobs:
       - name: Build apps
         run: |
           echo "start=$(date +%s)" >> "$GITHUB_ENV"
-          node packager/cli.ts webs/*/config.json
+          node packager/cli.ts
         env:
           ELECTRON_VERSION: ${{ steps.electron.outputs.version }}
 
       - name: Zip apps
         run: |
-          for dir in webs/*/; do
-            app_id=$(basename "$dir")
-            app_name=$(node -e "process.stdout.write(require('./${dir}config.json').name)")
-            app_dir="dist/${app_name}-darwin-arm64"
+          set -euo pipefail
+          # 守卫：manifest 必须存在且非空，否则硬失败（不静默跳过）
+          node -e "const m=require('./dist/manifest.json'); if(!Array.isArray(m)||m.length===0){console.error('❌ dist/manifest.json 为空或缺失');process.exit(1)}"
+          # install.sh 已由构建阶段生成在 $app_dir 内，这里只负责打 zip
+          while IFS=$'\t' read -r app_id app_dir; do
             app=$(find "$app_dir" -maxdepth 1 -name "*.app" -type d | head -1)
-            if [ -n "$app" ]; then
-              printf '%s\n' '#!/usr/bin/env bash' \
-                'set -euo pipefail' \
-                'cd "$(dirname "$0")"' \
-                'app=$(find . -maxdepth 1 -name "*.app" -type d | head -1)' \
-                'if [ -z "$app" ]; then echo "未找到 .app"; exit 1; fi' \
-                'name=$(basename "$app")' \
-                'xattr -dr com.apple.quarantine "$app"' \
-                'rm -rf "/Applications/$name"' \
-                'cp -R "$app" "/Applications/$name"' \
-                'echo "已安装: /Applications/$name"' \
-                > "$app_dir/install.sh"
-              chmod +x "$app_dir/install.sh"
-              ditto -c -k "$app_dir" "dist/${app_id}-darwin-arm64.zip"
-              echo "Zipped: ${app_id}-darwin-arm64.zip"
-            fi
-          done
+            if [ -z "$app" ]; then echo "❌ 未找到 .app: $app_dir"; exit 1; fi
+            ditto -c -k "$app_dir" "dist/${app_id}-darwin-arm64.zip"
+            echo "Zipped: ${app_id}-darwin-arm64.zip"
+          done < <(node -e "for(const a of require('./dist/manifest.json')) process.stdout.write(a.id+'\t'+a.appPaths[0]+'\n')")
 
       - name: Create Release
         env:
@@ -70,14 +58,15 @@ jobs:
           ELECTRON_VER: ${{ steps.electron.outputs.version }}
           CHROMIUM_VER: ${{ steps.electron.outputs.chromium }}
         run: |
+          set -euo pipefail
           tag="v${ELECTRON_VER}"
 
-          # 生成应用列表（含文件大小）
+          # 守卫：manifest 必须存在且非空（process substitution 会吞掉退出码，故显式校验）
+          node -e "const m=require('./dist/manifest.json'); if(!Array.isArray(m)||m.length===0){console.error('❌ dist/manifest.json 为空或缺失');process.exit(1)}"
+
+          # 生成应用列表（含文件大小），数据来自构建产出的 manifest
           apps=""
-          for dir in webs/*/; do
-            app_id=$(basename "$dir")
-            app_name=$(node -e "process.stdout.write(require('./${dir}config.json').name)")
-            app_url=$(node -e "process.stdout.write(require('./${dir}config.json').url)")
+          while IFS=$'\t' read -r app_id app_name app_url; do
             zip_file="dist/${app_id}-darwin-arm64.zip"
             if [ -f "$zip_file" ]; then
               size=$(du -h "$zip_file" | cut -f1 | xargs)
@@ -85,7 +74,7 @@ jobs:
             else
               apps="${apps}- **${app_name}** — ${app_url}"$'\n'
             fi
-          done
+          done < <(node -e "for(const a of require('./dist/manifest.json')) process.stdout.write(a.id+'\t'+a.name+'\t'+a.url+'\n')")
 
           # 写入 Release notes 文件
           elapsed=$(( $(date +%s) - start ))
