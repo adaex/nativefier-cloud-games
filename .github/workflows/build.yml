@@ -101,12 +101,21 @@ jobs:
             echo "- 耗时: ${elapsed}s"
           } > /tmp/release-notes.md
 
+          # 生成精简 manifest（剥离 appPaths 等仅 CI 有意义的字段），供安装器映射
+          # id → 名称/URL。写到独立文件，不覆盖含 appPaths 的 dist/manifest.json
+          node -e "
+            const m = require('./dist/manifest.json');
+            const out = m.map(({id, name, url, appId}) => ({id, name, url, appId}));
+            require('fs').writeFileSync('dist/release-manifest.json', JSON.stringify(out, null, 2));
+          "
+
           # 同一 Electron 版本已有 Release 则删除重建（上次可能上传失败）
           if gh release view "$tag" > /dev/null 2>&1; then
             gh release delete "$tag" --yes
             git push --delete origin "$tag" 2>/dev/null || true
           fi
-          gh release create "$tag" dist/*.zip \
+          # release-manifest.json 以显示名 manifest.json 上传（本地名避开 dist/*.zip glob）
+          gh release create "$tag" dist/*.zip 'dist/release-manifest.json#manifest.json' \
             --title "$tag" \
             --notes-file /tmp/release-notes.md \
             --latest
