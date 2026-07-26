@@ -10,7 +10,7 @@ app.commandLine.appendSwitch('lang', 'zh-CN');
 
 // 每个 app 用独立 userData 目录（按 id 隔离），否则所有 app 共享同一份
 // session/cookie/缓存，且单实例锁会跨 app 互斥。须在 requestSingleInstanceLock 前设置。
-app.setPath('userData', path.join(app.getPath('appData'), 'cloud-games', config.id));
+app.setPath('userData', path.join(app.getPath('appData'), `cloud-games-${config.id}`));
 
 // 只允许单实例：云游戏站多开会争抢同一会话，第二个实例直接退出
 if (!app.requestSingleInstanceLock()) {
@@ -18,13 +18,13 @@ if (!app.requestSingleInstanceLock()) {
   return;
 }
 
-// 伪装成纯 Chrome：从默认 UA 剥掉 "Electron/x" 与 "app/x" 段，避免云游戏
+// 伪装成纯 Chrome：从默认 UA 剥掉 "Electron/x" 与 "<应用名>/x" 段，避免云游戏
 // 站点按 UA 检测到非标准浏览器而降级或拒绝。不硬编码版本，随 Electron 升级自适应。
 function cleanUserAgent() {
+  const name = app.getName().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // 名字入正则前转义元字符
   return app.userAgentFallback
     .replace(/ Electron\/\S+/, '')
-    .replace(new RegExp(` ${app.getName()}\\/\\S+`), '')
-    .replace(/ app\/\S+/, '');
+    .replace(new RegExp(` ${name}\\/\\S+`), '');
 }
 
 // 全屏加载失败提示页（断网 / 站点 502 时不再白屏）

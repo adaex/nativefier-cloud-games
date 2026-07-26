@@ -1,12 +1,14 @@
 [
   {
-    "id": "migufun-pc",
-    "url": "https://www.migufun.com/middlepc/ucenter",
-    "appId": 1485843462
+    "id": 1485843462,
+    "url": "https://www.migufun.com/middlepc/ucenter"
   },
   {
-    "id": "mihoyo-ys",
-    "url": "https://ys.mihoyo.com/cloud/#/",
-    "appId": 1569029742
+    "id": 1569029742,
+    "url": "https://ys.mihoyo.com/cloud/#/"
+  },
+  {
+    "id": 6475038985,
+    "url": "https://sr.mihoyo.com/cloud/#/"
   }
 ]

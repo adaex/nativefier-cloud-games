@@ -62,6 +62,17 @@ async function main() {
   // 全部成功后写 manifest，供 CI 定位产物、生成 release notes
   const distDir = path.join(repoRoot, 'dist');
   fs.mkdirSync(distDir, { recursive: true });
+
+  // slug 是对外标识（zip 名/安装器选应用），重复会导致 zip 静默覆盖
+  const slugSeen = new Map<string, number>();
+  for (const r of results) {
+    if (slugSeen.has(r.slug)) {
+      console.error(`\n❌ slug 冲突: "${r.slug}" 同时来自 id=${slugSeen.get(r.slug)} 与 id=${r.id}，请区分 url 域名`);
+      process.exit(1);
+    }
+    slugSeen.set(r.slug, r.id);
+  }
+
   fs.writeFileSync(
     path.join(distDir, 'manifest.json'),
     JSON.stringify(results, null, 2),

@@ -48,12 +48,13 @@ jobs:
         run: |
           set -euo pipefail
           # install.sh 已由构建阶段生成在 $app_dir 内，这里只负责打 zip
-          while IFS=$'\t' read -r app_id app_dir; do
+          # zip 名用 id-slug（数字 id 防撞 + 域名 slug 可读）
+          while IFS=$'\t' read -r app_id app_slug app_dir; do
             app=$(find "$app_dir" -maxdepth 1 -name "*.app" -type d | head -1)
             if [ -z "$app" ]; then echo "❌ 未找到 .app: $app_dir"; exit 1; fi
-            ditto -c -k "$app_dir" "dist/${app_id}-darwin-arm64.zip"
-            echo "Zipped: ${app_id}-darwin-arm64.zip"
-          done < <(node -e "for(const a of require('./dist/manifest.json')) process.stdout.write(a.id+'\t'+a.appPaths[0]+'\n')")
+            ditto -c -k "$app_dir" "dist/${app_id}-${app_slug}-darwin-arm64.zip"
+            echo "Zipped: ${app_id}-${app_slug}-darwin-arm64.zip"
+          done < <(node -e "for(const a of require('./dist/manifest.json')) process.stdout.write(a.id+'\t'+a.slug+'\t'+a.appPaths[0]+'\n')")
 
       - name: Create Release
         env:
@@ -66,15 +67,15 @@ jobs:
 
           # 生成应用列表（含文件大小），数据来自构建产出的 manifest
           apps=""
-          while IFS=$'\t' read -r app_id app_name app_url; do
-            zip_file="dist/${app_id}-darwin-arm64.zip"
+          while IFS=$'\t' read -r app_id app_slug app_name app_url; do
+            zip_file="dist/${app_id}-${app_slug}-darwin-arm64.zip"
             if [ -f "$zip_file" ]; then
               size=$(du -h "$zip_file" | cut -f1 | xargs)
               apps="${apps}- **${app_name}** — ${app_url} (${size})"$'\n'
             else
               apps="${apps}- **${app_name}** — ${app_url}"$'\n'
             fi
-          done < <(node -e "for(const a of require('./dist/manifest.json')) process.stdout.write(a.id+'\t'+a.name+'\t'+a.url+'\n')")
+          done < <(node -e "for(const a of require('./dist/manifest.json')) process.stdout.write(a.id+'\t'+a.slug+'\t'+a.name+'\t'+a.url+'\n')")
 
           # 写入 Release notes 文件
           elapsed=$(( $(date +%s) - start ))
@@ -102,10 +103,10 @@ jobs:
           } > /tmp/release-notes.md
 
           # 生成精简 manifest（剥离 appPaths 等仅 CI 有意义的字段），供安装器映射
-          # id → 名称/URL。写到独立文件，不覆盖含 appPaths 的 dist/manifest.json
+          # id/slug → 名称/URL。写到独立文件，不覆盖含 appPaths 的 dist/manifest.json
           node -e "
             const m = require('./dist/manifest.json');
-            const out = m.map(({id, name, url, appId}) => ({id, name, url, appId}));
+            const out = m.map(({id, slug, name, url}) => ({id, slug, name, url}));
             require('fs').writeFileSync('dist/release-manifest.json', JSON.stringify(out, null, 2));
           "
 

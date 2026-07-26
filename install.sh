@@ -5,10 +5,11 @@
 #       解压后再调用各 zip 内的 install.sh（去 quarantine + 复制到 /Applications）。
 #
 # 用法：
-#   ./install.sh                      安装全部应用
-#   ./install.sh migufun-pc mihoyo-ys 仅安装指定 app id
+#   ./install.sh                      按 apps.json 顺序安装全部应用（下载-安装交错）
+#   ./install.sh mihoyo               slug 模糊匹配（"mihoyo" 命中所有含该串的应用）
+#   ./install.sh 1569029742           纯数字按 App Store id 精准匹配
 #   ./install.sh --list               列出可安装的应用
-#   curl -fsSL <raw-url> | bash -s -- migufun-pc   远程一行安装
+#   curl -fsSL <raw-url> | bash -s -- ys-mihoyo   远程一行安装
 #
 # 兼容 macOS 自带 bash 3.2：不使用关联数组 / mapfile；set -u 下不对空数组做
 # "${arr[@]}" 展开（该展开在 3.2 会报 unbound variable）。
@@ -18,7 +19,7 @@ set -euo pipefail
 REPO="adaex/nativefier-cloud-games"
 MIRROR="https://v6.gh-proxy.org"
 ASSET_SUFFIX="-darwin-arm64.zip"
-MANIFEST_ASSET="release-manifest.json"  # CI 上传到 release 的精简 manifest（供 --list 映射名称/URL）
+MANIFEST_ASSET="release-manifest.json"  # CI 上传的精简 manifest（id/slug/名称/URL，权威顺序=apps.json）
 
 # ---------------------------------------------------------------------------
 # 函数定义（须在调用前）
@@ -28,13 +29,14 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 print_help() {
   cat <<'EOF'
-用法: install.sh [选项] [app-id ...]
+用法: install.sh [选项] [app ...]
 
-  无 app-id      安装全部应用
-  指定 app-id    仅安装列出的应用（如: install.sh migufun-pc mihoyo-ys）
+  无 app 参数    按 apps.json 顺序安装全部应用
+  指定 app       纯数字按 id 精准匹配；其余按 slug 子串模糊匹配
+                 （如: install.sh mihoyo  或  install.sh 1569029742）
 
 选项:
-  -l, --list     列出可安装的应用（id + 名称 + 网址）后退出
+  -l, --list     列出可安装的应用（id + slug + 名称 + 网址）后退出
   -h, --help     显示本帮助
       --mirror   通过镜像下载 (https://v6.gh-proxy.org)，国内网络更快
       --no-mirror  直连 GitHub（默认）
@@ -42,7 +44,7 @@ print_help() {
       --no-gh    禁用 gh cli
 
 远程一行安装:
-  curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/install.sh | bash -s -- migufun-pc
+  curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/install.sh | bash -s -- ys-mihoyo
 EOF
 }
 
@@ -59,34 +61,28 @@ asset_url_by_name() {
   return 1
 }
 
-# id 是否在后续参数列表中
-in_list() {
-  local x="$1"; shift
-  local e
-  for e in "$@"; do
-    [[ "$e" == "$x" ]] && return 0
+# asset 名是否存在于 release
+asset_exists() {
+  local want="$1" a
+  for a in ${asset_names[@]+"${asset_names[@]}"}; do
+    [[ "$a" == "$want" ]] && return 0
   done
   return 1
 }
 
-# 从并行数组 MID/MNAME/MURL 中查显示名 / url（找不到名字回退 id）
-lookup_name() {
-  local q="$1" k
-  for k in "${!MID[@]}"; do
-    [[ "${MID[$k]}" == "$q" ]] && { printf '%s' "${MNAME[$k]}"; return; }
+# 已选索引去重追加
+add_idx() {
+  local x="$1" e
+  for e in ${sel_idx[@]+"${sel_idx[@]}"}; do
+    [[ "$e" == "$x" ]] && return
   done
-  printf '%s' "$q"
-}
-lookup_url() {
-  local q="$1" k
-  for k in "${!MID[@]}"; do
-    [[ "${MID[$k]}" == "$q" ]] && { printf '%s' "${MURL[$k]}"; return; }
-  done
+  sel_idx+=("$x")
 }
 
-# 下载并解析精简 manifest；成功填充 MID/MNAME/MURL 并返回 0，失败返回 1
+# 下载并解析精简 manifest（权威源，顺序 = apps.json）；
+# 成功填充并行数组 AID/ASLUG/ANAME/AURL 并返回 0，失败返回 1
 fetch_manifest() {
-  local mf="$tmpdir/$MANIFEST_ASSET" url j=0 id name murl
+  local mf="$tmpdir/$MANIFEST_ASSET" url j=0 id slug name murl
   if (( use_gh )); then
     gh release download "$tag" --repo "$REPO" --pattern "$MANIFEST_ASSET" \
        --dir "$tmpdir" --clobber >/dev/null 2>&1 || return 1
@@ -96,13 +92,32 @@ fetch_manifest() {
     curl -fsSL "$url" -o "$mf" || return 1
   fi
   [[ -f "$mf" ]] || return 1
-  while id=$(plutil -extract "$j.id" raw -o - -- "$mf" 2>/dev/null); do
-    name=$(plutil -extract "$j.name" raw -o - -- "$mf" 2>/dev/null || printf '%s' "$id")
+  while slug=$(plutil -extract "$j.slug" raw -o - -- "$mf" 2>/dev/null); do
+    id=$(plutil -extract "$j.id"   raw -o - -- "$mf" 2>/dev/null || printf '')
+    name=$(plutil -extract "$j.name" raw -o - -- "$mf" 2>/dev/null || printf '%s' "$slug")
     murl=$(plutil -extract "$j.url"  raw -o - -- "$mf" 2>/dev/null || printf '')
-    MID+=("$id"); MNAME+=("$name"); MURL+=("$murl")
+    AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$name"); AURL+=("$murl")
     j=$((j + 1))
   done
-  [[ ${#MID[@]} -gt 0 ]]
+  [[ ${#ASLUG[@]} -gt 0 ]]
+}
+
+# 降级：manifest 缺失时从 zip asset 名（id-slug-darwin-arm64.zip）解析 id/slug
+parse_zip_assets() {
+  local a rest id slug
+  for a in ${asset_names[@]+"${asset_names[@]}"}; do
+    case "$a" in
+      *"$ASSET_SUFFIX")
+        rest="${a%"$ASSET_SUFFIX"}"           # id-slug
+        if [[ "$rest" == [0-9]*-* ]]; then
+          id="${rest%%-*}"; slug="${rest#*-}"
+        else
+          id=""; slug="$rest"
+        fi
+        AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$slug"); AURL+=("")
+        ;;
+    esac
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -189,25 +204,25 @@ echo "找到 release: $tag"
 # 拉取精简 manifest（best-effort，失败则降级为只显示 id）
 # ---------------------------------------------------------------------------
 
-MID=(); MNAME=(); MURL=()
+# 并行数组：AID/ASLUG/ANAME/AURL，顺序即 apps.json（manifest）或 asset 名（降级）
+AID=(); ASLUG=(); ANAME=(); AURL=()
 have_manifest=0
 if fetch_manifest; then
   have_manifest=1
 else
-  echo "提示: 未获取到 ${MANIFEST_ASSET}（可能是旧 release），仅显示 id。" >&2
+  echo "提示: 未获取到 ${MANIFEST_ASSET}（可能是旧 release），从包名解析。" >&2
+  parse_zip_assets
 fi
+[[ ${#ASLUG[@]} -gt 0 ]] || die "release $tag 内无可安装的 $ASSET_SUFFIX 包"
 
-# ---------------------------------------------------------------------------
-# 计算可选 id（列出 zip assets 去后缀）—— 无需额外索引
-# ---------------------------------------------------------------------------
-
-avail_ids=()
-for a in "${asset_names[@]}"; do
-  case "$a" in
-    *"$ASSET_SUFFIX") avail_ids+=("${a%"$ASSET_SUFFIX"}") ;;
-  esac
+# manifest 里的 app 未必都已上传成功，过滤掉 release 中缺失对应 zip 的项
+FID=(); FSLUG=(); FNAME=(); FURL=()
+for k in "${!ASLUG[@]}"; do
+  zip="${AID[$k]:+${AID[$k]}-}${ASLUG[$k]}${ASSET_SUFFIX}"
+  asset_exists "$zip" || continue
+  FID+=("${AID[$k]}"); FSLUG+=("${ASLUG[$k]}"); FNAME+=("${ANAME[$k]}"); FURL+=("${AURL[$k]}")
 done
-[[ ${#avail_ids[@]} -gt 0 ]] || die "release $tag 内无可安装的 $ASSET_SUFFIX 包"
+[[ ${#FSLUG[@]} -gt 0 ]] || die "release $tag 内无可安装的 $ASSET_SUFFIX 包"
 
 # ---------------------------------------------------------------------------
 # --list
@@ -215,76 +230,83 @@ done
 
 if (( do_list )); then
   echo "可安装应用 ($tag):"
-  for id in "${avail_ids[@]}"; do
+  for k in "${!FSLUG[@]}"; do
     if (( have_manifest )); then
-      printf '  %-16s %s — %s\n' "$id" "$(lookup_name "$id")" "$(lookup_url "$id")"
+      printf '  %-12s %-16s %s — %s\n' "${FID[$k]}" "${FSLUG[$k]}" "${FNAME[$k]}" "${FURL[$k]}"
     else
-      printf '  %s\n' "$id"
+      printf '  %-12s %s\n' "${FID[$k]}" "${FSLUG[$k]}"
     fi
   done
   exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# 选择要安装的 id：无位置参数 → 全装；否则按 id 过滤并校验拼写
+# 选择要安装的应用索引：无参数 → 全部（按 apps.json 顺序）；
+# 否则逐个参数匹配 —— 纯数字按 id 精准，其余按 slug 子串模糊
 # ---------------------------------------------------------------------------
 
-sel_ids=()
+sel_idx=()
 if [[ ${#want_ids[@]} -eq 0 ]]; then
-  sel_ids=("${avail_ids[@]}")
+  for k in "${!FSLUG[@]}"; do sel_idx+=("$k"); done
 else
   for w in "${want_ids[@]}"; do
-    in_list "$w" "${avail_ids[@]}" \
-      || die "未知 app id: '$w'。用 './install.sh --list' 查看可选项。"
-    sel_ids+=("$w")
+    matched=0
+    if [[ "$w" =~ ^[0-9]+$ ]]; then
+      for k in "${!FID[@]}"; do
+        [[ "${FID[$k]}" == "$w" ]] && { add_idx "$k"; matched=1; }
+      done
+    else
+      for k in "${!FSLUG[@]}"; do
+        case "${FSLUG[$k]}" in *"$w"*) add_idx "$k"; matched=1 ;; esac
+      done
+    fi
+    (( matched )) || die "未知 app: '$w'。用 './install.sh --list' 查看可选项。"
   done
 fi
 
 # ---------------------------------------------------------------------------
-# 下载选中的 zip —— 三模式
+# 逐个下载并安装（下载-安装交错，按选中顺序）—— 三模式
 # ---------------------------------------------------------------------------
 
-echo ""
-echo "准备下载 ${#sel_ids[@]} 个应用..."
-if (( use_gh )); then
-  for id in "${sel_ids[@]}"; do
-    echo "[$id] 通过 gh 下载..."
-    gh release download "$tag" --repo "$REPO" --pattern "${id}${ASSET_SUFFIX}" \
-       --dir "$tmpdir" --clobber || die "[$id] 下载失败"
-  done
-else
-  for id in "${sel_ids[@]}"; do
-    fname="${id}${ASSET_SUFFIX}"
-    url=$(asset_url_by_name "$fname") || die "[$id] 在 release 中找不到 $fname"
-    (( use_mirror )) && url="$MIRROR/$url"
-    echo "[$fname] 下载中..."
-    curl -fSL --progress-bar -o "$tmpdir/$fname" "$url" || die "[$fname] 下载失败"
-  done
-fi
+install_one() {
+  local id="$1" slug="$2" name="$3"
+  local zip="${id:+${id}-}${slug}${ASSET_SUFFIX}"
+  local dest="$tmpdir/$zip" url extract_dir
 
-# ---------------------------------------------------------------------------
-# 解压 + 调用各包内 install.sh（去 quarantine + 复制到 /Applications）
-# ---------------------------------------------------------------------------
-
-echo ""
-echo "开始安装..."
-for f in "$tmpdir"/*"$ASSET_SUFFIX"; do
-  [[ -f "$f" ]] || continue
-  filename="${f##*/}"
-  extract_dir="$tmpdir/${filename%.zip}"
   echo ""
-  echo "[$filename] 解压..."
+  echo "[$name] 下载 $zip ..."
+  if (( use_gh )); then
+    gh release download "$tag" --repo "$REPO" --pattern "$zip" \
+       --dir "$tmpdir" --clobber || { echo "[$name] 下载失败，跳过"; return 1; }
+  else
+    url=$(asset_url_by_name "$zip") || { echo "[$name] 在 release 中找不到 $zip，跳过"; return 1; }
+    (( use_mirror )) && url="$MIRROR/$url"
+    curl -fSL --progress-bar -o "$dest" "$url" || { echo "[$name] 下载失败，跳过"; return 1; }
+  fi
+
+  echo "[$name] 解压并安装..."
+  extract_dir="$tmpdir/${zip%.zip}"
   mkdir -p "$extract_dir"
-  if ! unzip -qo "$f" -d "$extract_dir"; then
-    echo "[$filename] 解压失败，跳过"
-    continue
+  if ! unzip -qo "$dest" -d "$extract_dir"; then
+    echo "[$name] 解压失败，跳过"; return 1
   fi
   if [[ -f "$extract_dir/install.sh" ]]; then
     ( cd "$extract_dir" && bash install.sh )
   else
-    echo "[$filename] 未找到包内 install.sh，跳过"
+    echo "[$name] 未找到包内 install.sh，跳过"; return 1
   fi
+}
+
+echo ""
+echo "准备安装 ${#sel_idx[@]} 个应用..."
+fail=0
+for k in "${sel_idx[@]}"; do
+  install_one "${FID[$k]}" "${FSLUG[$k]}" "${FNAME[$k]}" || fail=$((fail + 1))
 done
 
 echo ""
+if (( fail )); then
+  echo "完成，$fail 个应用失败。"
+  exit 1
+fi
 echo "全部完成。"

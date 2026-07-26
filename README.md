@@ -10,14 +10,14 @@
 # 安装全部应用
 curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/install.sh | bash
 
-# 只装指定应用（位置参数为 app id）
-curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/install.sh | bash -s -- migufun-pc mihoyo-ys
+# 只装指定应用（slug 模糊匹配，或 App Store 数字 id 精准匹配）
+curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/install.sh | bash -s -- mihoyo migufun
 
 # 列出可安装的应用（id + 名称 + 网址）
 curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/install.sh | bash -s -- --list
 ```
 
-已 clone 仓库也可直接 `./install.sh [app-id ...]`。
+已 clone 仓库也可直接 `./install.sh [app ...]`。
 
 选项：
 

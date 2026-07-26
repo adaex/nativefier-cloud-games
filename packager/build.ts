@@ -12,15 +12,9 @@ const ELECTRON_MIRROR = process.env.CI
   : 'https://npmmirror.com/mirrors/electron/';
 
 export interface AppConfig {
-  /** 应用唯一标识，用于生成 bundleId 与 zip 文件名（须为 ASCII，保持稳定） */
-  id: string;
+  /** App Store 数字 ID：既是应用唯一标识（bundleId/zip 名/userData），也是拉取图标与名称的查询键 */
+  id: number;
   url: string;
-  /** App Store 数字 ID，用于动态拉取图标与名称 */
-  appId?: number;
-  /** 手动覆盖显示名（缺省则取 App Store trackName 截断后的主名） */
-  name?: string;
-  /** 手动覆盖图标本地路径，相对仓库根目录（缺省则按 appId 从 App Store 下载） */
-  icon?: string;
   /** App Store 区域，默认 cn */
   country?: string;
   platform?: string;
@@ -28,11 +22,25 @@ export interface AppConfig {
 }
 
 export interface BuildResult {
-  id: string;
+  id: number;
+  /** 对外标识：由 url 域名派生的可读 slug，用于 zip 名与安装器选应用 */
+  slug: string;
   name: string;
   url: string;
-  appId?: number;
   appPaths: string[];
+}
+
+/**
+ * 由 url 域名派生对外可读 slug：hostname 去 www 前缀、去顶级域名、其余段用连字符拼接。
+ * 例：https://ys.mihoyo.com/... → ys-mihoyo；https://www.migufun.com/... → migufun
+ */
+export function deriveSlug(url: string): string {
+  const host = new URL(url).hostname.replace(/^www\./, '');
+  const parts = host.split('.');
+  if (parts.length > 1) parts.pop(); // 去掉 TLD
+  const slug = parts.join('-').toLowerCase();
+  if (!slug) throw new Error(`无法从 url 派生 slug: ${url}`);
+  return slug;
 }
 
 const log = {
@@ -165,20 +173,20 @@ function writeInstallScript(appDir: string): void {
 export async function build(config: AppConfig): Promise<BuildResult> {
   const repoRoot = path.join(import.meta.dirname, '..');
 
-  // 校验矩阵：id、url 恒必填；appId 或（name 且 icon）之一必须提供
-  if (!config.id) {
-    throw new Error('配置项必须包含 id 字段');
+  // 校验：id、url 必填。id 即 App Store 数字 ID
+  if (config.id === undefined || config.id === null) {
+    throw new Error('配置项必须包含 id 字段（App Store 数字 ID）');
+  }
+  if (!Number.isInteger(config.id)) {
+    throw new Error(`配置项 ${config.id} 的 id 必须是整数（App Store 数字 ID）`);
   }
   if (!config.url) {
     throw new Error(`配置项 ${config.id} 必须包含 url 字段`);
   }
-  const hasManualOverride = Boolean(config.name && config.icon);
-  if (config.appId === undefined && !hasManualOverride) {
-    throw new Error(`配置项 ${config.id} 必须包含 appId，或同时提供 name 和 icon 作为手动覆盖`);
-  }
 
   const id = config.id;
-  const bundleId = `com.electron.webapp.${id}`;
+  const slug = deriveSlug(config.url);
+  const bundleId = `io.github.adaex.cloudgames.${id}`;
   const country = config.country ?? 'cn';
   const electronVersion = getElectronVersion();
   const platform = config.platform ?? process.platform;
@@ -190,48 +198,39 @@ export async function build(config: AppConfig): Promise<BuildResult> {
     const templateDir = path.join(import.meta.dirname, 'template');
     fs.cpSync(templateDir, tmpDir, { recursive: true });
 
-    // app 版本号与 Electron 版本对齐
+    // 读取 template package.json，稍后与 version/name 一起写回（name 需先解析）
     const pkgPath = path.join(tmpDir, 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    pkg.version = electronVersion;
-    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 
-    // 按需从 App Store 拉取名称与图标地址（name/icon 显式提供时可跳过对应部分）
-    let name = config.name;
-    let iconUrl: string | undefined;
-    if (config.appId !== undefined && (!name || !config.icon)) {
-      log.info(`查询 App Store: appId=${config.appId} (${country})`);
-      const meta = await fetchAppMeta(config.appId, country);
-      if (!name) name = meta.name;
-      if (!config.icon) iconUrl = meta.iconUrl;
-      log.ok(`App Store 名称: ${meta.name}`);
-    }
-    if (!name) throw new Error('无法确定应用名称');
+    // 从 App Store 拉取名称与图标地址（id 即查询键）
+    log.info(`查询 App Store: id=${id} (${country})`);
+    const meta = await fetchAppMeta(id, country);
+    const name = meta.name;
+    const iconUrl = meta.iconUrl;
+    log.ok(`App Store 名称: ${name}`);
+
+    // package.json：version 对齐 Electron；productName 设为真实名，使
+    // app.getName() 返回真实名（菜单 About/Quit 显示真实名）。name 保持
+    // ASCII id 以符合 npm 规范，app.getName() 优先读 productName。
+    pkg.version = electronVersion;
+    pkg.name = String(id);
+    pkg.productName = name;
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 
     fs.writeFileSync(
       path.join(tmpDir, 'app.json'),
       JSON.stringify({ id, name, url: config.url }),
     );
 
-    // 图标解析：①显式 config.icon 本地路径（相对仓库根目录）→ ②按 appId 下载
-    let iconSrc: string | undefined;
-    if (config.icon) {
-      iconSrc = path.resolve(repoRoot, config.icon);
-      if (!fs.existsSync(iconSrc)) {
-        throw new Error(`指定的图标文件不存在: ${iconSrc}`);
-      }
-    } else if (iconUrl) {
-      iconSrc = path.join(tmpDir, 'downloaded-icon.png');
-      await downloadIcon(iconUrl, iconSrc);
-    }
+    // 图标：按 id 从 App Store 下载
+    const iconSrc = path.join(tmpDir, 'downloaded-icon.png');
+    await downloadIcon(iconUrl, iconSrc);
 
     let icon: string | undefined;
-    if (iconSrc) {
-      if (platform === 'darwin' && iconSrc.endsWith('.png')) {
-        icon = pngToIcns(iconSrc, tmpDir);
-      } else {
-        icon = iconSrc;
-      }
+    if (platform === 'darwin' && iconSrc.endsWith('.png')) {
+      icon = pngToIcns(iconSrc, tmpDir);
+    } else {
+      icon = iconSrc;
     }
 
     log.info(`开始构建: ${name} (${id})`);
@@ -258,7 +257,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
         writeInstallScript(p);
       }
     }
-    return { id, name, url: config.url, appId: config.appId, appPaths };
+    return { id, slug, name, url: config.url, appPaths };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
