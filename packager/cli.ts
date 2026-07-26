@@ -20,16 +20,41 @@ async function main() {
 
   const results: BuildResult[] = [];
   let total = 0;
-  for (let i = 0; i < apps.length; i++) {
-    const app = apps[i];
-    if (i > 0) console.log();
+
+  const buildOne = (app: AppConfig, i: number): Promise<BuildResult> => {
     console.log(`[${i + 1}/${apps.length}] ${app.id ?? '(缺少 id)'}`);
-    try {
-      const result = await build(app);
-      results.push(result);
-      total += result.appPaths.length;
-    } catch (e) {
-      console.error(`\n❌ 构建失败 (${app.id ?? `第 ${i + 1} 项`}):`, (e as Error).message);
+    return build(app);
+  };
+
+  // 先串行构建第一个：预热 Electron 二进制下载缓存，避免并行时多个构建
+  // 并发冷下载同一份 Electron。其余应用再并行（缓存已就绪，纯本地打包）。
+  // 仅 1 个 app 时等价于原来的串行行为。
+  try {
+    const first = await buildOne(apps[0], 0);
+    results.push(first);
+    total += first.appPaths.length;
+  } catch (e) {
+    console.error(`\n❌ 构建失败 (${apps[0].id ?? '第 1 项'}):`, (e as Error).message);
+    process.exit(1);
+  }
+
+  const rest = apps.slice(1);
+  if (rest.length > 0) {
+    const settled = await Promise.allSettled(
+      rest.map((app, k) => buildOne(app, k + 1)),
+    );
+    const failures: string[] = [];
+    settled.forEach((r, k) => {
+      const app = rest[k];
+      if (r.status === 'fulfilled') {
+        results.push(r.value);
+        total += r.value.appPaths.length;
+      } else {
+        failures.push(`${app.id ?? `第 ${k + 2} 项`}: ${(r.reason as Error).message}`);
+      }
+    });
+    if (failures.length > 0) {
+      console.error(`\n❌ 构建失败:\n${failures.map((f) => `  - ${f}`).join('\n')}`);
       process.exit(1);
     }
   }

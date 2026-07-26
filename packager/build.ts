@@ -210,7 +210,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
 
     fs.writeFileSync(
       path.join(tmpDir, 'app.json'),
-      JSON.stringify({ name, url: config.url }),
+      JSON.stringify({ id, name, url: config.url }),
     );
 
     // 图标解析：①显式 config.icon 本地路径（相对仓库根目录）→ ②按 appId 下载

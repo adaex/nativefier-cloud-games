@@ -39,11 +39,14 @@ jobs:
         env:
           ELECTRON_VERSION: ${{ steps.electron.outputs.version }}
 
+      # manifest 是后续 Zip / Release 的唯一数据源，集中校验一次；
+      # 之后的 step 直接信任它非空（process substitution 会吞掉退出码，故不在其内重复校验）
+      - name: Verify manifest
+        run: node -e "const m=require('./dist/manifest.json'); if(!Array.isArray(m)||m.length===0){console.error('❌ dist/manifest.json 为空或缺失');process.exit(1)}"
+
       - name: Zip apps
         run: |
           set -euo pipefail
-          # 守卫：manifest 必须存在且非空，否则硬失败（不静默跳过）
-          node -e "const m=require('./dist/manifest.json'); if(!Array.isArray(m)||m.length===0){console.error('❌ dist/manifest.json 为空或缺失');process.exit(1)}"
           # install.sh 已由构建阶段生成在 $app_dir 内，这里只负责打 zip
           while IFS=$'\t' read -r app_id app_dir; do
             app=$(find "$app_dir" -maxdepth 1 -name "*.app" -type d | head -1)
@@ -60,9 +63,6 @@ jobs:
         run: |
           set -euo pipefail
           tag="v${ELECTRON_VER}"
-
-          # 守卫：manifest 必须存在且非空（process substitution 会吞掉退出码，故显式校验）
-          node -e "const m=require('./dist/manifest.json'); if(!Array.isArray(m)||m.length===0){console.error('❌ dist/manifest.json 为空或缺失');process.exit(1)}"
 
           # 生成应用列表（含文件大小），数据来自构建产出的 manifest
           apps=""
