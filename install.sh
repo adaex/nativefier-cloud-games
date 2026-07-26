@@ -92,12 +92,18 @@ fetch_manifest() {
     curl -fsSL "$url" -o "$mf" || return 1
   fi
   [[ -f "$mf" ]] || return 1
-  while slug=$(plutil -extract "$j.slug" raw -o - -- "$mf" 2>/dev/null); do
+  # 循环条件用「第 j 项对象是否存在」，而非某字段提取成功——
+  # 否则某项缺 slug 会让循环提前终止、静默丢弃其后所有 app。
+  while plutil -extract "$j" raw -o /dev/null -- "$mf" 2>/dev/null; do
+    slug=$(plutil -extract "$j.slug" raw -o - -- "$mf" 2>/dev/null || printf '')
     id=$(plutil -extract "$j.id"   raw -o - -- "$mf" 2>/dev/null || printf '')
-    name=$(plutil -extract "$j.name" raw -o - -- "$mf" 2>/dev/null || printf '%s' "$slug")
+    name=$(plutil -extract "$j.name" raw -o - -- "$mf" 2>/dev/null || printf '')
     murl=$(plutil -extract "$j.url"  raw -o - -- "$mf" 2>/dev/null || printf '')
-    AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$name"); AURL+=("$murl")
     j=$((j + 1))
+    # slug 是选包与拼 zip 名的关键，缺失则该项不可安装，跳过（不中断后续）
+    [[ -n "$slug" ]] || { echo "提示: manifest 第 $j 项缺 slug，已跳过。" >&2; continue; }
+    [[ -n "$name" ]] || name="$slug"
+    AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$name"); AURL+=("$murl")
   done
   [[ ${#ASLUG[@]} -gt 0 ]]
 }
