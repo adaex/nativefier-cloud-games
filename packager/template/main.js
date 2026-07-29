@@ -27,6 +27,19 @@ function cleanUserAgent() {
     .replace(new RegExp(` ${name}\\/\\S+`), '');
 }
 
+// 主域（eTLD+1 近似）：will-navigate 用它判断「站内」。无 PSL，对 com.cn 等
+// 常见复合 TLD 取后三段，其余取后两段。mihoyo.com 系登录域（passport.mihoyo.com
+// 等）与主站同主域，不会被误判为外站。
+const COMPOUND_TLDS = ['com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
+  'com.hk', 'com.tw', 'co.jp', 'or.jp', 'co.uk', 'org.uk', 'com.au', 'com.br'];
+function baseDomain(host) {
+  const parts = host.split('.');
+  const last2 = parts.slice(-2).join('.');
+  const n = parts.length > 2 && COMPOUND_TLDS.includes(last2) ? 3 : 2;
+  return parts.slice(-n).join('.');
+}
+const SITE_BASE = baseDomain(new URL(config.url).hostname);
+
 // 全屏加载失败提示页（断网 / 站点 502 时不再白屏）
 function showErrorPage(win, url, code, desc) {
   const html = `<!doctype html><meta charset="utf-8">
@@ -62,11 +75,26 @@ function createWindow() {
 
   win.once('ready-to-show', () => win.show());
 
-  // 弹窗 / window.open / target=_blank：外链交给系统浏览器，
-  // 站内新窗口沿用同样的全屏与 UA 配置
+  // 弹窗 / window.open / target=_blank：一律交给系统浏览器。
+  // 全屏窗口没有标签页与导航 UI，开在站内无法返回，故站内弹窗也不放行。
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  // 页面内跳转：只允许留在同主域；跳外站交给系统浏览器，避免全屏窗口
+  // 被困在没有返回手段的外部页面。畸形 URL 解析失败时放行，交 Chromium 处理
+  win.webContents.on('will-navigate', (e, url) => {
+    if (!/^https?:/.test(url)) return;
+    let host;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      return;
+    }
+    if (baseDomain(host) === SITE_BASE) return;
+    e.preventDefault();
+    shell.openExternal(url);
   });
 
   // data: 错误页自身失败不递归；-3 是主动取消，忽略

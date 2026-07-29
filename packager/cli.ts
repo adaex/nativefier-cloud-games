@@ -120,7 +120,15 @@ async function main() {
 
   const total = results.reduce((n, r) => n + r.appPaths.length, 0);
   if (failures.length > 0) {
-    // 部分失败：警告但以 0 退出，使 CI 继续发布成功的 app
+    // 部分失败：警告但以 0 退出，使 CI 继续发布成功的 app。
+    // ::warning:: 注解 + Step Summary 让失败在 Actions 页面可见，不再静默
+    for (const f of failures) console.warn(`::warning::构建失败 ${f}`);
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      fs.appendFileSync(
+        process.env.GITHUB_STEP_SUMMARY,
+        `## ⚠️ ${failures.length} 个应用构建失败\n\n${failures.map((f) => `- ${f}`).join('\n')}\n`,
+      );
+    }
     console.warn(`\n⚠️  ${failures.length} 个应用失败（已跳过，其余照常发布）:\n${failures.map((f) => `  - ${f}`).join('\n')}`);
     console.log(`\n✅ 成功 ${results.length} 个，共 ${total} 个包`);
   } else {

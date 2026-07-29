@@ -9,6 +9,7 @@
 #   ./install.sh mihoyo               slug 模糊匹配（"mihoyo" 命中所有含该串的应用）
 #   ./install.sh 1569029742           纯数字按 App Store id 精准匹配
 #   ./install.sh --list               列出可安装的应用
+#   ./install.sh --force              已装同版本也强制重装（默认跳过同版本）
 #   curl -fsSL <raw-url> | bash -s -- ys-mihoyo   远程一行安装
 #
 # 兼容 macOS 自带 bash 3.2：不使用关联数组 / mapfile；set -u 下不对空数组做
@@ -20,6 +21,7 @@ REPO="adaex/nativefier-cloud-games"
 MIRROR="https://v6.gh-proxy.org"
 ASSET_SUFFIX="-darwin-arm64.zip"
 MANIFEST_ASSET="release-manifest.json"  # CI 上传的精简 manifest（id/slug/名称/URL，权威顺序=apps.json）
+CHECKSUM_ASSET="checksums.txt"          # CI 上传的 zip SHA256 清单
 
 # ---------------------------------------------------------------------------
 # 函数定义（须在调用前）
@@ -37,6 +39,7 @@ print_help() {
 
 选项:
   -l, --list     列出可安装的应用（id + slug + 名称 + 网址）后退出
+  -f, --force    已装同版本也强制重装（默认跳过）
   -h, --help     显示本帮助
       --mirror   通过镜像下载 (https://v6.gh-proxy.org)，国内网络更快
       --no-mirror  直连 GitHub（默认）
@@ -100,12 +103,52 @@ fetch_manifest() {
     name=$(plutil -extract "$j.name" raw -o - -- "$mf" 2>/dev/null || printf '')
     murl=$(plutil -extract "$j.url"  raw -o - -- "$mf" 2>/dev/null || printf '')
     j=$((j + 1))
-    # slug 是选包与拼 zip 名的关键，缺失则该项不可安装，跳过（不中断后续）
-    [[ -n "$slug" ]] || { echo "提示: manifest 第 $j 项缺 slug，已跳过。" >&2; continue; }
+    # id/slug 是拼 zip 名（id-slug-*.zip）的关键，缺失则该项不可安装，跳过（不中断后续）
+    [[ -n "$id" && -n "$slug" ]] || { echo "提示: manifest 第 $j 项缺 id/slug，已跳过。" >&2; continue; }
     [[ -n "$name" ]] || name="$slug"
     AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$name"); AURL+=("$murl")
   done
   [[ ${#ASLUG[@]} -gt 0 ]]
+}
+
+# 下载 zip 的 SHA256 清单。注意：即使 --mirror 也始终直连 GitHub 获取——
+# 校验文件若走同一镜像，篡改者连校验值一起改，校验就失去意义
+fetch_checksums() {
+  local cs="$tmpdir/$CHECKSUM_ASSET" url
+  if (( use_gh )); then
+    gh release download "$tag" --repo "$REPO" --pattern "$CHECKSUM_ASSET" \
+       --dir "$tmpdir" --clobber >/dev/null 2>&1 || return 1
+  else
+    url=$(asset_url_by_name "$CHECKSUM_ASSET") || return 1
+    curl -fsSL "$url" -o "$cs" || return 1
+  fi
+  [[ -s "$cs" ]]
+}
+
+# 用 checksums.txt 校验已下载的 zip；清单中无此项或不一致均拒绝安装
+verify_zip() {
+  local zip="$1" file="$2" expected actual
+  expected=$(awk -v f="$zip" '$2 == f {print $1}' "$tmpdir/$CHECKSUM_ASSET")
+  if [[ -z "$expected" ]]; then
+    echo "校验清单中无 $zip，拒绝安装（release 不完整）" >&2
+    return 1
+  fi
+  actual=$(shasum -a 256 "$file" | awk '{print $1}')
+  if [[ "$expected" != "$actual" ]]; then
+    echo "$zip 校验失败（期望 $expected，实际 $actual），拒绝安装——文件可能被篡改" >&2
+    return 1
+  fi
+}
+
+# 已安装版本的读取（/Applications 与 ~/Applications），无安装返回 1
+installed_version() {
+  local name="$1" base plist
+  for base in /Applications "$HOME/Applications"; do
+    plist="$base/$name.app/Contents/Info.plist"
+    [[ -f "$plist" ]] || continue
+    plutil -extract CFBundleShortVersionString raw -o - -- "$plist" 2>/dev/null && return 0
+  done
+  return 1
 }
 
 # 降级：manifest 缺失时从 zip asset 名（id-slug-darwin-arm64.zip）解析 id/slug
@@ -143,6 +186,7 @@ trap cleanup EXIT
 use_mirror=0
 use_gh=""          # 空 = 自动探测
 do_list=0
+force=0
 want_ids=()
 
 while [[ $# -gt 0 ]]; do
@@ -152,6 +196,7 @@ while [[ $# -gt 0 ]]; do
     --gh)        use_gh=1 ;;
     --no-gh)     use_gh=0 ;;
     -l|--list)   do_list=1 ;;
+    -f|--force)  force=1 ;;
     -h|--help)   print_help; exit 0 ;;
     --)          shift; while [[ $# -gt 0 ]]; do want_ids+=("$1"); shift; done; break ;;
     -*)          die "未知选项: $1（用 --help 查看用法）" ;;
@@ -174,6 +219,7 @@ fi
 
 command -v unzip  >/dev/null 2>&1 || die "缺少 unzip"
 command -v plutil >/dev/null 2>&1 || die "缺少 plutil（macOS 自带）"
+command -v shasum >/dev/null 2>&1 || die "缺少 shasum（macOS 自带）"
 if (( ! use_gh )); then
   command -v curl >/dev/null 2>&1 || die "缺少 curl"
 fi
@@ -247,6 +293,17 @@ if (( do_list )); then
 fi
 
 # ---------------------------------------------------------------------------
+# 拉取 zip 校验清单（best-effort；旧 release 没有则跳过校验并提示）
+# ---------------------------------------------------------------------------
+
+have_checksums=0
+if fetch_checksums; then
+  have_checksums=1
+else
+  echo "提示: 未获取到 ${CHECKSUM_ASSET}（可能是旧 release），跳过下载完整性校验。" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # 选择要安装的应用索引：无参数 → 全部（按 apps.json 顺序）；
 # 否则逐个参数匹配 —— 纯数字按 id 精准，其余按 slug 子串模糊
 # ---------------------------------------------------------------------------
@@ -277,7 +334,14 @@ fi
 install_one() {
   local id="$1" slug="$2" name="$3"
   local zip="${id:+${id}-}${slug}${ASSET_SUFFIX}"
-  local dest="$tmpdir/$zip" url extract_dir
+  local dest="$tmpdir/$zip" url extract_dir cur_ver
+
+  # 已装同版本（app 的 CFBundleShortVersionString 即构建时的 Electron 版本，
+  # 与 release tag 去 v 前缀一致）则跳过下载；降级模式无 name 时恒不命中
+  if (( ! force )) && cur_ver=$(installed_version "$name") && [[ "$cur_ver" == "${tag#v}" ]]; then
+    echo "[$name] 已是最新 ($cur_ver)，跳过。用 --force 强制重装。"
+    return 0
+  fi
 
   echo ""
   echo "[$name] 下载 $zip ..."
@@ -287,7 +351,11 @@ install_one() {
   else
     url=$(asset_url_by_name "$zip") || { echo "[$name] 在 release 中找不到 $zip，跳过"; return 1; }
     (( use_mirror )) && url="$MIRROR/$url"
-    curl -fSL --progress-bar -o "$dest" "$url" || { echo "[$name] 下载失败，跳过"; return 1; }
+    curl -fSL --retry 3 --progress-bar -o "$dest" "$url" || { echo "[$name] 下载失败，跳过"; return 1; }
+  fi
+
+  if (( have_checksums )); then
+    verify_zip "$zip" "$dest" || return 1
   fi
 
   echo "[$name] 解压并安装..."

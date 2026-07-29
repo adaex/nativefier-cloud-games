@@ -22,15 +22,12 @@ curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/i
 选项：
 
 - `-l, --list`：列出可安装的应用
+- `-f, --force`：已装同版本也强制重装（默认已装同版本时跳过下载）
 - `--mirror`：通过镜像下载（国内网络更快）
 - `--gh` / `--no-gh`：强制 / 禁用 gh cli 下载
 
-安装器会下载对应 zip、去除 macOS 隔离标记，并复制到 `/Applications`。仅支持 macOS (darwin-arm64)。
+安装器会下载对应 zip、用 release 的 `checksums.txt` 校验完整性（镜像下载场景防篡改）、去除 macOS 隔离标记，并复制到 `/Applications`（无管理员权限时装进 `~/Applications`）。仅支持 macOS (darwin-arm64)。
 
 ## 查看 Electron 版本
 
 https://releases.electronjs.org/release?channel=stable
-
-## 查看 Nativefier API
-
-https://github.com/nativefier/nativefier/blob/master/API.md

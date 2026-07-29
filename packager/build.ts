@@ -30,14 +30,25 @@ export interface BuildResult {
   appPaths: string[];
 }
 
+/** 常见复合 TLD（二级后缀），派生 slug 时需整体去掉 */
+const COMPOUND_TLDS = new Set([
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
+  'com.hk', 'com.tw', 'co.jp', 'or.jp', 'co.uk', 'org.uk', 'com.au', 'com.br',
+]);
+
 /**
- * 由 url 域名派生对外可读 slug：hostname 去 www 前缀、去顶级域名、其余段用连字符拼接。
+ * 由 url 域名派生对外可读 slug：hostname 去 www 前缀、去顶级域名（含 com.cn 等
+ * 复合 TLD）、其余段用连字符拼接。
  * 例：https://ys.mihoyo.com/... → ys-mihoyo；https://www.migufun.com/... → migufun
  */
 export function deriveSlug(url: string): string {
   const host = new URL(url).hostname.replace(/^www\./, '');
   const parts = host.split('.');
-  if (parts.length > 1) parts.pop(); // 去掉 TLD
+  if (parts.length > 2 && COMPOUND_TLDS.has(parts.slice(-2).join('.'))) {
+    parts.splice(-2); // 复合 TLD 整体去掉
+  } else if (parts.length > 1) {
+    parts.pop(); // 普通 TLD
+  }
   const slug = parts.join('-').toLowerCase();
   if (!slug) throw new Error(`无法从 url 派生 slug: ${url}`);
   return slug;
@@ -159,10 +170,13 @@ function writeInstallScript(appDir: string): void {
     'if [ -z "$app" ]; then echo "未找到 .app"; exit 1; fi',
     'name=$(basename "$app")',
     'xattr -dr com.apple.quarantine "$app"',
+    '# 无 /Applications 写权限（非管理员）时装进 ~/Applications',
+    'if [ -w /Applications ]; then dest_base=/Applications; else dest_base="$HOME/Applications"; mkdir -p "$dest_base"; fi',
     '# 原子替换：先 cp 到同卷临时目录，成功后再 rm 旧的 + mv 就位。',
     '# 避免 rm 先于 cp——若 cp 中途失败（磁盘满/中断），旧安装仍完好。',
-    'dest="/Applications/$name"',
-    'tmp="/Applications/.${name}.tmp.$$"',
+    'dest="$dest_base/$name"',
+    'if [ -e "$dest" ] && [ ! -w "$dest" ]; then echo "无权限替换 $dest（属主可能是其他用户），请先手动删除。"; exit 1; fi',
+    'tmp="$dest_base/.${name}.tmp.$$"',
     'rm -rf "$tmp"',
     'trap \'rm -rf "$tmp"\' EXIT',
     'cp -R "$app" "$tmp"',
