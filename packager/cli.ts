@@ -64,82 +64,37 @@ async function main() {
 
   preflight(apps);
 
-  // 只保留本次产物，避免部分失败或移除应用后，build-and-install 误装历史包
-  fs.rmSync(path.join(repoRoot, 'dist'), { recursive: true, force: true });
+  // 只保留本次产物，避免移除应用后，build-and-install 误装历史包
+  const distDir = path.join(repoRoot, 'dist');
+  fs.rmSync(distDir, { recursive: true, force: true });
 
+  // 串行复用 Electron 下载缓存；任一应用失败都直接终止，CI 不进入发布步骤
   const results: BuildResult[] = [];
-  const failures: string[] = [];
-
-  const buildOne = (app: AppConfig, i: number): Promise<BuildResult> => {
+  for (const [i, app] of apps.entries()) {
     console.log(`[${i + 1}/${apps.length}] id=${app.id}`);
-    return build(app);
-  };
-
-  // 先串行构建第一个：预热 Electron 二进制下载缓存，避免并行时多个构建
-  // 并发冷下载同一份 Electron。其余应用再并行（缓存已就绪，纯本地打包）。
-  // 首个失败不再直接退出，统一纳入失败收集，与其余应用错误处理对称。
-  try {
-    results.push(await buildOne(apps[0], 0));
-  } catch (e) {
-    failures.push(`id=${apps[0].id}: ${(e as Error).message}`);
-  }
-
-  const rest = apps.slice(1);
-  if (rest.length > 0) {
-    const settled = await Promise.allSettled(rest.map((app, k) => buildOne(app, k + 1)));
-    settled.forEach((r, k) => {
-      if (r.status === 'fulfilled') results.push(r.value);
-      else failures.push(`id=${rest[k].id}: ${(r.reason as Error).message}`);
-    });
+    results.push(await build(app));
   }
 
   // 构建后校验：name 来自 App Store，只能此时得知。同名应用会互相替换安装；
   // macOS 默认文件系统不区分大小写，Unicode 规范化后再按小写检测冲突。
   const nameSeen = new Map<string, number>();
-  const nameConflicts: string[] = [];
   for (const r of results) {
     const key = r.name.normalize('NFKC').toLowerCase();
-    if (nameSeen.has(key)) {
-      nameConflicts.push(`name 冲突: "${r.name}"（id=${nameSeen.get(key)} 与 id=${r.id}），安装目录会互相覆盖`);
-    } else {
-      nameSeen.set(key, r.id);
+    const previousId = nameSeen.get(key);
+    if (previousId !== undefined) {
+      throw new Error(`name 冲突: "${r.name}"（id=${previousId} 与 id=${r.id}），安装目录会互相覆盖`);
     }
-  }
-  if (nameConflicts.length > 0) {
-    console.error(`\n❌ ${nameConflicts.join('\n❌ ')}`);
-    process.exit(1);
+    nameSeen.set(key, r.id);
   }
 
-  // 全部失败：无任何产物，硬失败（不写空 manifest）
-  if (results.length === 0) {
-    console.error(`\n❌ 全部构建失败:\n${failures.map((f) => `  - ${f}`).join('\n')}`);
-    process.exit(1);
-  }
-
-  // 写内部与对外 manifest（只含成功者），供 CI 定位产物、合并历史和生成 release notes。
-  // 部分失败时仍写入成功者；对外字段统一在这里裁剪，避免各发布分支重复实现。
-  const distDir = path.join(repoRoot, 'dist');
+  // 写内部与对外 manifest，供 CI 定位产物和生成 release notes
   fs.mkdirSync(distDir, { recursive: true });
   fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify(results, null, 2));
   const releaseManifest = results.map(({ appPaths, ...entry }) => entry);
   fs.writeFileSync(path.join(distDir, 'release-manifest.json'), JSON.stringify(releaseManifest, null, 2));
 
   const total = results.reduce((n, r) => n + r.appPaths.length, 0);
-  if (failures.length > 0) {
-    // 部分失败：警告但以 0 退出，使 CI 继续发布成功的 app。
-    // ::warning:: 注解 + Step Summary 让失败在 Actions 页面可见，不再静默
-    for (const f of failures) console.warn(`::warning::构建失败 ${f}`);
-    if (process.env.GITHUB_STEP_SUMMARY) {
-      fs.appendFileSync(
-        process.env.GITHUB_STEP_SUMMARY,
-        `## ⚠️ ${failures.length} 个应用构建失败\n\n${failures.map((f) => `- ${f}`).join('\n')}\n`,
-      );
-    }
-    console.warn(`\n⚠️  ${failures.length} 个应用失败（已跳过，其余照常发布）:\n${failures.map((f) => `  - ${f}`).join('\n')}`);
-    console.log(`\n✅ 成功 ${results.length} 个，共 ${total} 个包`);
-  } else {
-    console.log(`\n✅ 全部完成，共 ${total} 个包`);
-  }
+  console.log(`\n✅ 全部完成，共 ${total} 个包`);
 }
 
 main().catch((e) => {

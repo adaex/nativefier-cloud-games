@@ -14,11 +14,11 @@
 
 `dist/manifest.json` 是构建阶段的内部清单，不要上传；两份清单的分工见 [构建行为](development.md#构建行为)
 
-## 增量发布
+## 发布策略
 
-禁止为了发布而删除再重建 release：这会造成 release 暂时不存在，还可能在部分构建失败时连带丢失旧包。已有 tag 用 `gh release edit` 更新说明，asset 用 `gh release upload --clobber` 覆盖
+禁止为了发布而删除再重建 release：这会造成 release 暂时不存在。已有 tag 用 `gh release edit` 更新说明，asset 用 `gh release upload --clobber` 覆盖
 
-构建器允许部分应用失败并继续发布，因此 CI 必须从同 tag 的 release 合并旧清单；同 tag 不存在时，从上一个 release 合并。未在本次成功构建但仍配置于 `apps.json` 的应用，需要连同旧 zip 一起保留；已从 `apps.json` 移除的应用不再保留。携带包保留其实际 `electronVersion` 与 `revision`，旧 manifest 缺字段时以来源 tag 作为 Electron 版本，避免按新 tag 误判和反复重装
+构建器串行构建全部应用，任一失败就以非 0 退出，CI 不进入发布步骤，旧 release 保持可用。全部成功后才上传本次全部 zip 和 manifest，不读取或合并历史 manifest，也不携带旧包
 
 CI 和安装器必须使用同一个实际 asset 名 `release-manifest.json`。`gh release create` 的 `path#label` 只改变显示标签，不改变下载时使用的 asset 名
 
@@ -35,9 +35,9 @@ CI 和安装器必须使用同一个实际 asset 名 `release-manifest.json`。`
 
 - 必须获取 `release-manifest.json`；下载失败或文件缺失时直接退出，不从 zip 文件名降级，避免误装已移除的旧包
 - 无位置参数时安装全部应用；纯数字参数按 id 精准匹配，其余参数按 slug 子串模糊匹配
-- 已安装应用的实际 Electron 版本与 manifest 一致，且源码 `CloudGamesRevision` 与 manifest 的 `revision` 一致时，默认跳过下载；`--force` 强制重装。旧 manifest 没有 `revision` 时仅比较 Electron 版本，保证平滑升级一次后进入新判断
+- 已安装应用的 Electron 版本与 manifest 一致，且源码 `CloudGamesRevision` 与 manifest 的 `revision` 一致时，默认跳过下载；缺少字段或值不同都会重装，`--force` 强制重装
 - 必须获取 `checksums.txt`，zip 匹配清单才能安装；下载失败、文件缺失或校验不一致都拒绝安装
-- 即使 zip 和 manifest 使用 `--mirror`，校验清单也始终直连 GitHub 获取，避免镜像同时篡改文件和校验值
+- 下载只使用 macOS 自带的 `curl`，通过 `releases/latest/download/<文件名>` 获取固定名称的 asset，不依赖 `gh` 或 GitHub API 配额；即使 zip 和 manifest 使用 `--mirror`，校验清单也始终直连 GitHub，避免镜像同时篡改文件和校验值
 - 脚本必须自包含，支持 `curl ... | bash`，不能依赖仓库中的其他文件
 - 必须兼容 macOS 自带的 bash 3.2：不用关联数组、`mapfile`，并避免 `set -u` 下直接展开空数组；JSON 解析使用 macOS 自带的 `plutil`，不依赖 Python
 
@@ -52,9 +52,9 @@ CI 和安装器必须使用同一个实际 asset 名 `release-manifest.json`。`
 ```bash
 bash -n install.sh
 ./install.sh --help
-./install.sh --list --no-gh
+./install.sh --list
 ```
 
-`--list` 只读取远端 release，不安装应用。改动镜像或 gh 下载逻辑时，再分别覆盖 `--mirror --no-gh`、`--gh` 路径；后者要求 gh 已登录
+`--list` 只读取远端 release，不安装应用。改动镜像下载逻辑时，再覆盖 `./install.sh --list --mirror`
 
-真实安装会替换 `/Applications` 或 `~/Applications` 中的同名应用，不要把安装命令当作只读检查。修改 CI 后可用 `workflow_dispatch` 做端到端验证，但它会实际更新 GitHub Release，需要核对合并后的 manifest、全部 zip 和 `checksums.txt`
+真实安装会替换 `/Applications` 或 `~/Applications` 中的同名应用，不要把安装命令当作只读检查。修改 CI 后可用 `workflow_dispatch` 做端到端验证，但它会实际更新 GitHub Release，需要核对 manifest、全部 zip 和 `checksums.txt`

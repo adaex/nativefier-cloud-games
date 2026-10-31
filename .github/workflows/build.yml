@@ -29,14 +29,7 @@ jobs:
 
       - name: Get Electron version
         id: electron
-        run: |
-          ver=$(npm view electron version)
-          chromium=$(curl -s "https://releases.electronjs.org/releases.json" | node -e "
-            const r=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(x=>x.version==='$ver');
-            process.stdout.write(r?.chrome||'unknown');
-          ")
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
-          echo "chromium=$chromium" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(npm view electron version)" >> "$GITHUB_OUTPUT"
 
       # Electron 二进制（~100MB）按版本缓存，避免每次全量下载
       - uses: actions/cache@v6
@@ -45,9 +38,7 @@ jobs:
           key: electron-${{ steps.electron.outputs.version }}
 
       - name: Build apps
-        run: |
-          echo "start=$(date +%s)" >> "$GITHUB_ENV"
-          node packager/cli.ts
+        run: node packager/cli.ts
         env:
           ELECTRON_VERSION: ${{ steps.electron.outputs.version }}
 
@@ -68,77 +59,24 @@ jobs:
             echo "Zipped: ${app_id}-${app_slug}-darwin-arm64.zip"
           done < <(node -e "for(const a of require('./dist/manifest.json')) process.stdout.write(a.id+'\t'+a.slug+'\t'+a.appPaths[0]+'\n')")
 
-      # 合并历史 manifest：增量发布不删旧 asset，本次构建失败的 app 需沿用
-      # 上一 release 的条目与 zip，否则它们会从新 release 中消失（丢包）。
-      # 来源优先同 tag（Electron 未变），否则取上一个 release（Electron 升级，
-      # 把旧 zip 一并携带过来）。从 apps.json 移除的 app 不再保留。
-      - name: Merge manifest & carry forward assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ELECTRON_VER: ${{ steps.electron.outputs.version }}
-        run: |
-          set -euo pipefail
-          tag="v${ELECTRON_VER}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            src="$tag"
-          else
-            src=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')
-          fi
-          if [ -n "$src" ]; then
-            # 旧 release 可能还没有 manifest 文件（首次升级前）——下载不到就按无历史处理
-            gh release download "$src" --pattern 'release-manifest.json' --dir /tmp --clobber \
-              || echo "提示: $src 无 release-manifest.json,按首次发布处理"
-          fi
-          carried=$(node -e "
-            const fs = require('fs');
-            const cur = JSON.parse(fs.readFileSync('dist/release-manifest.json','utf8'));
-            let prev = [];
-            try { prev = JSON.parse(fs.readFileSync('/tmp/release-manifest.json','utf8')); } catch {}
-            const apps = JSON.parse(fs.readFileSync('apps.json','utf8'));
-            const keep = new Set(apps.map(a=>String(a.id)));
-            const order = new Map(apps.map((a,i)=>[String(a.id),i]));
-            const curIds = new Set(cur.map(e=>String(e.id)));
-            const fallbackElectron = '${src#v}';
-            const carried = prev.filter(e=>!curIds.has(String(e.id)) && keep.has(String(e.id)))
-              .map(e=>({...e,electronVersion:e.electronVersion??fallbackElectron}));
-            const out = [...cur, ...carried]
-              .sort((a,b)=>order.get(String(a.id))-order.get(String(b.id)));
-            fs.writeFileSync('dist/release-manifest.json', JSON.stringify(out,null,2));
-            process.stdout.write(carried.map(e=>e.id+'-'+e.slug+'-darwin-arm64.zip').join(' '));
-          ")
-          if [ -n "$src" ]; then
-            for z in $carried; do
-              gh release download "$src" --pattern "$z" --dir dist --clobber
-              echo "携带旧包: $z (来自 $src)"
-            done
-          fi
-
       - name: Create Release
         env:
           GH_TOKEN: ${{ github.token }}
           ELECTRON_VER: ${{ steps.electron.outputs.version }}
-          CHROMIUM_VER: ${{ steps.electron.outputs.chromium }}
         run: |
           set -euo pipefail
           tag="v${ELECTRON_VER}"
 
-          # 生成应用列表（含文件大小），数据来自合并后的精简 manifest
+          # 生成应用列表（含文件大小），数据来自本次精简 manifest
           apps=""
           while IFS=$'\t' read -r app_id app_slug app_name app_url; do
             zip_file="dist/${app_id}-${app_slug}-darwin-arm64.zip"
-            if [ -f "$zip_file" ]; then
-              size=$(du -h "$zip_file" | cut -f1 | xargs)
-              apps="${apps}- **${app_name}** — ${app_url} (${size})"$'\n'
-            else
-              apps="${apps}- **${app_name}** — ${app_url}"$'\n'
-            fi
+            size=$(du -h "$zip_file" | cut -f1 | xargs)
+            apps="${apps}- **${app_name}** — ${app_url} (${size})"$'\n'
           done < <(node -e "for(const a of require('./dist/release-manifest.json')) process.stdout.write(a.id+'\t'+a.slug+'\t'+a.name+'\t'+a.url+'\n')")
 
-          # 写入 Release notes 文件
-          elapsed=$(( $(date +%s) - start ))
-          build_time=$(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M CST")
           {
-            echo "基于 Electron ${ELECTRON_VER} 构建的云游戏客户端。"
+            echo "基于 Electron ${ELECTRON_VER} 构建的 macOS arm64 云游戏客户端。"
             echo ""
             echo "### 包含应用"
             echo ""
@@ -148,22 +86,12 @@ jobs:
             echo ""
             echo "1. 下载对应的 zip 文件并解压"
             echo '2. 在解压目录中运行 `./install.sh`（会自动移除隔离标记并复制到 /Applications）'
-            echo ""
-            echo "### 构建信息"
-            echo ""
-            echo "- Platform: macOS (darwin-arm64)"
-            echo "- Electron: ${ELECTRON_VER}"
-            echo "- Chromium: ${CHROMIUM_VER}"
-            echo "- Node: $(node --version)"
-            echo "- 构建时间: ${build_time}"
-            echo "- 耗时: ${elapsed}s"
           } > /tmp/release-notes.md
 
           # zip 的 SHA256 校验值，安装器下载后校验完整性（镜像下载场景的防篡改手段）
           (cd dist && shasum -a 256 *.zip > checksums.txt)
 
-          # 增量发布：不删除旧 release（删除→重建之间安装器会报「无法获取 release」，
-          # 且部分失败时会连坐丢失旧包）。存在则更新 notes，asset 用 --clobber 覆盖上传
+          # 已有 tag 就地更新，asset 用 --clobber 覆盖；构建失败不会执行本步骤
           if gh release view "$tag" > /dev/null 2>&1; then
             gh release edit "$tag" --title "$tag" --notes-file /tmp/release-notes.md --latest
           else

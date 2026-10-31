@@ -17,8 +17,6 @@ export interface AppConfig {
   url: string;
   /** App Store 区域，默认 cn */
   country?: string;
-  platform?: string;
-  arch?: string;
 }
 
 export interface BuildResult {
@@ -27,7 +25,7 @@ export interface BuildResult {
   slug: string;
   name: string;
   url: string;
-  /** 每个 zip 实际构建时使用的 Electron 版本，携带旧包时仍保留原值 */
+  /** 构建使用的 Electron 版本 */
   electronVersion: string;
   /** 源码版本；同 Electron 版本下的内容更新也借此触发重装 */
   revision: string;
@@ -116,16 +114,16 @@ function shortName(track: string): string {
   return name;
 }
 
-async function fetchJson(url: string, retries = 3): Promise<unknown> {
+async function fetchBuffer(url: string, timeout = 15000): Promise<Buffer> {
   let lastErr: unknown;
-  for (let i = 0; i < retries; i++) {
+  for (let i = 0; i < 3; i++) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(timeout) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
+      return Buffer.from(await res.arrayBuffer());
     } catch (e) {
       lastErr = e;
-      if (i < retries - 1) log.info(`请求失败，重试 (${i + 1}/${retries - 1}): ${(e as Error).message}`);
+      if (i < 2) log.info(`请求失败，重试 (${i + 1}/2): ${(e as Error).message}`);
     }
   }
   throw new Error(`请求失败 (${url}): ${(lastErr as Error).message}`);
@@ -139,7 +137,7 @@ interface AppMeta {
 /** 通过 iTunes Lookup API 获取 App 名称与 1024px 图标地址 */
 async function fetchAppMeta(appId: number, country: string): Promise<AppMeta> {
   const url = `https://itunes.apple.com/lookup?id=${appId}&country=${country}`;
-  const data = await fetchJson(url) as { resultCount?: number; results?: Array<{ trackName: string; artworkUrl512?: string; artworkUrl100?: string }> };
+  const data = JSON.parse((await fetchBuffer(url)).toString('utf8')) as { resultCount?: number; results?: Array<{ trackName: string; artworkUrl512?: string; artworkUrl100?: string }> };
   if (!data.resultCount || !data.results?.length) {
     throw new Error(`App Store 未找到 appId=${appId} (country=${country})`);
   }
@@ -154,23 +152,11 @@ async function fetchAppMeta(appId: number, country: string): Promise<AppMeta> {
 }
 
 /** 下载图标到指定 PNG 路径 */
-async function downloadIcon(url: string, destPngPath: string, retries = 3): Promise<void> {
-  let lastErr: unknown;
-  for (let i = 0; i < retries; i++) {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < 1024) throw new Error(`图标文件过小 (${buf.length} 字节)，疑似无效`);
-      fs.writeFileSync(destPngPath, buf);
-      log.ok(`图标下载完成: ${(buf.length / 1024).toFixed(0)} KB`);
-      return;
-    } catch (e) {
-      lastErr = e;
-      if (i < retries - 1) log.info(`图标下载失败，重试 (${i + 1}/${retries - 1}): ${(e as Error).message}`);
-    }
-  }
-  throw new Error(`图标下载失败 (${url}): ${(lastErr as Error).message}`);
+async function downloadIcon(url: string, destPngPath: string): Promise<void> {
+  const buf = await fetchBuffer(url, 30000);
+  if (buf.length < 1024) throw new Error(`图标文件过小 (${buf.length} 字节)，疑似无效`);
+  fs.writeFileSync(destPngPath, buf);
+  log.ok(`图标下载完成: ${(buf.length / 1024).toFixed(0)} KB`);
 }
 
 /**
@@ -210,27 +196,13 @@ function writeInstallScript(appDir: string): void {
 
 export async function build(config: AppConfig): Promise<BuildResult> {
   const repoRoot = path.join(import.meta.dirname, '..');
-
-  // 校验：id、url 必填。id 即 App Store 数字 ID
-  if (config.id === undefined || config.id === null) {
-    throw new Error('配置项必须包含 id 字段（App Store 数字 ID）');
-  }
-  if (!Number.isInteger(config.id)) {
-    throw new Error(`配置项 ${config.id} 的 id 必须是整数（App Store 数字 ID）`);
-  }
-  if (!config.url) {
-    throw new Error(`配置项 ${config.id} 必须包含 url 字段`);
-  }
-
   const id = config.id;
   const slug = deriveSlug(config.url);
   const bundleId = `io.github.adaex.cloudgames.${id}`;
   const country = config.country ?? 'cn';
   const electronVersion = getElectronVersion();
   const revision = getSourceRevision();
-  const platform = config.platform ?? process.platform;
-  const arch = config.arch ?? os.arch();
-  // 每个 app 独立输出目录，避免同名或大小写相近的名称在并行构建时争用目录
+  // 每个 app 独立输出目录，避免同名或大小写相近的名称争用目录
   const outDir = path.join(repoRoot, 'dist', String(id));
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'packager-'));
@@ -265,13 +237,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
     // 图标：按 id 从 App Store 下载
     const iconSrc = path.join(tmpDir, 'downloaded-icon.png');
     await downloadIcon(iconUrl, iconSrc);
-
-    let icon: string | undefined;
-    if (platform === 'darwin' && iconSrc.endsWith('.png')) {
-      icon = pngToIcns(iconSrc, tmpDir);
-    } else {
-      icon = iconSrc;
-    }
+    const icon = pngToIcns(iconSrc, tmpDir);
 
     log.info(`开始构建: ${name} (${id})`);
     const appPaths = await packager({
@@ -280,8 +246,8 @@ export async function build(config: AppConfig): Promise<BuildResult> {
       appBundleId: bundleId,
       electronVersion,
       extendInfo: { CloudGamesRevision: revision },
-      platform: platform,
-      arch: arch,
+      platform: 'darwin',
+      arch: 'arm64',
       out: outDir,
       overwrite: true,
       icon,
@@ -293,10 +259,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
 
     for (const p of appPaths) {
       log.ok(`输出: ${p}`);
-      // 仅 macOS 产物需要 install.sh（去隔离标记 + 复制到 /Applications）
-      if (platform === 'darwin') {
-        writeInstallScript(p);
-      }
+      writeInstallScript(p);
     }
     return { id, slug, name, url: config.url, electronVersion, revision, appPaths };
   } finally {

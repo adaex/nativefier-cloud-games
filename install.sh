@@ -18,6 +18,7 @@
 set -euo pipefail
 
 REPO="adaex/nativefier-cloud-games"
+DOWNLOAD_BASE="https://github.com/$REPO/releases/latest/download"
 MIRROR="https://v6.gh-proxy.org"
 ASSET_SUFFIX="-darwin-arm64.zip"
 MANIFEST_ASSET="release-manifest.json"  # CI 上传的精简 manifest（id/slug/名称/URL，权威顺序=apps.json）
@@ -43,34 +44,10 @@ print_help() {
   -h, --help     显示本帮助
       --mirror   通过镜像下载 (https://v6.gh-proxy.org)，国内网络更快
       --no-mirror  直连 GitHub（默认）
-      --gh       强制使用 gh cli 下载
-      --no-gh    禁用 gh cli
 
 远程一行安装:
   curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/install.sh | bash -s -- ys-mihoyo
 EOF
-}
-
-# 在已落盘的 release.json 中，按 asset 名查其 browser_download_url
-asset_url_by_name() {
-  local want="$1" i=0 n
-  while n=$(plutil -extract "assets.$i.name" raw -o - -- "$rel" 2>/dev/null); do
-    if [[ "$n" == "$want" ]]; then
-      plutil -extract "assets.$i.browser_download_url" raw -o - -- "$rel"
-      return 0
-    fi
-    i=$((i + 1))
-  done
-  return 1
-}
-
-# asset 名是否存在于 release
-asset_exists() {
-  local want="$1" a
-  for a in ${asset_names[@]+"${asset_names[@]}"}; do
-    [[ "$a" == "$want" ]] && return 0
-  done
-  return 1
 }
 
 # 已选索引去重追加
@@ -86,14 +63,9 @@ add_idx() {
 # 成功填充应用信息、源码 revision 和实际 Electron 版本，失败返回 1
 fetch_manifest() {
   local mf="$tmpdir/$MANIFEST_ASSET" url j=0 id slug name murl rev ever
-  if (( use_gh )); then
-    gh release download "$tag" --repo "$REPO" --pattern "$MANIFEST_ASSET" \
-       --dir "$tmpdir" --clobber >/dev/null 2>&1 || return 1
-  else
-    url=$(asset_url_by_name "$MANIFEST_ASSET") || return 1
-    (( use_mirror )) && url="$MIRROR/$url"
-    curl -fsSL "$url" -o "$mf" || return 1
-  fi
+  url="$DOWNLOAD_BASE/$MANIFEST_ASSET"
+  (( use_mirror )) && url="$MIRROR/$url"
+  curl -fsSL "$url" -o "$mf" || return 1
   [[ -f "$mf" ]] || return 1
   # 循环条件用「第 j 项对象是否存在」，而非某字段提取成功——
   # 否则某项缺 slug 会让循环提前终止、静默丢弃其后所有 app。
@@ -108,8 +80,6 @@ fetch_manifest() {
     # id/slug 是拼 zip 名（id-slug-*.zip）的关键，缺失则该项不可安装，跳过（不中断后续）
     [[ -n "$id" && -n "$slug" ]] || { echo "提示: manifest 第 $j 项缺 id/slug，已跳过。" >&2; continue; }
     [[ -n "$name" ]] || name="$slug"
-    # 兼容旧 manifest；新条目始终带有 electronVersion 和 revision
-    [[ -n "$ever" ]] || ever="${tag#v}"
     AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$name"); AURL+=("$murl")
     AREV+=("$rev"); AEVER+=("$ever")
   done
@@ -119,14 +89,8 @@ fetch_manifest() {
 # 下载 zip 的 SHA256 清单。注意：即使 --mirror 也始终直连 GitHub 获取——
 # 校验文件若走同一镜像，篡改者连校验值一起改，校验就失去意义
 fetch_checksums() {
-  local cs="$tmpdir/$CHECKSUM_ASSET" url
-  if (( use_gh )); then
-    gh release download "$tag" --repo "$REPO" --pattern "$CHECKSUM_ASSET" \
-       --dir "$tmpdir" --clobber >/dev/null 2>&1 || return 1
-  else
-    url=$(asset_url_by_name "$CHECKSUM_ASSET") || return 1
-    curl -fsSL "$url" -o "$cs" || return 1
-  fi
+  local cs="$tmpdir/$CHECKSUM_ASSET"
+  curl -fsSL "$DOWNLOAD_BASE/$CHECKSUM_ASSET" -o "$cs" || return 1
   [[ -s "$cs" ]]
 }
 
@@ -156,14 +120,12 @@ installed_info() {
   return 1
 }
 
-# 新 manifest 同时比较实际 Electron 版本与源码 revision；旧 manifest 无 revision
-# 时保留原有版本判断。携带旧包使用其自身 Electron 版本，而不是当前 release tag
+# Electron 版本与源码 revision 都一致时才跳过；缺字段或值不同都会重装
 is_current() {
   local name="$1" revision="$2" electron_version="$3" cur_ver cur_rev
   (( ! force )) || return 1
   cur_ver=$(installed_info "$name" CFBundleShortVersionString) || return 1
   [[ "$cur_ver" == "$electron_version" ]] || return 1
-  [[ -n "$revision" ]] || return 0
   cur_rev=$(installed_info "$name" CloudGamesRevision) || return 1
   [[ "$cur_rev" == "$revision" ]]
 }
@@ -183,7 +145,6 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 
 use_mirror=0
-use_gh=""          # 空 = 自动探测
 do_list=0
 force=0
 want_ids=()
@@ -192,8 +153,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --mirror)    use_mirror=1 ;;
     --no-mirror) use_mirror=0 ;;
-    --gh)        use_gh=1 ;;
-    --no-gh)     use_gh=0 ;;
     -l|--list)   do_list=1 ;;
     -f|--force)  force=1 ;;
     -h|--help)   print_help; exit 0 ;;
@@ -205,51 +164,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# gh 探测 + 依赖检查
+# 依赖检查
 # ---------------------------------------------------------------------------
-
-if [[ -z "$use_gh" ]]; then
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    use_gh=1
-  else
-    use_gh=0
-  fi
-fi
 
 command -v unzip  >/dev/null 2>&1 || die "缺少 unzip"
 command -v plutil >/dev/null 2>&1 || die "缺少 plutil（macOS 自带）"
 command -v shasum >/dev/null 2>&1 || die "缺少 shasum（macOS 自带）"
-if (( ! use_gh )); then
-  command -v curl >/dev/null 2>&1 || die "缺少 curl"
-fi
+command -v curl   >/dev/null 2>&1 || die "缺少 curl"
 
 # ---------------------------------------------------------------------------
-# 获取 release 元数据（tag + asset 名单）—— 三模式，共用 plutil 解析
+# 准备临时目录
 # ---------------------------------------------------------------------------
 
 tmpdir=$(mktemp -d) || die "无法创建临时目录"
-rel="$tmpdir/release.json"
-
-if (( use_gh )); then
-  gh api "repos/$REPO/releases/latest" > "$rel" 2>/dev/null \
-    || die "无法获取 release 信息（gh api 失败）"
-else
-  api="https://api.github.com/repos/$REPO/releases/latest"
-  (( use_mirror )) && api="$MIRROR/$api"
-  curl -fsSL "$api" -o "$rel" || die "无法获取 release 信息"
-fi
-
-tag=$(plutil -extract tag_name raw -o - -- "$rel" 2>/dev/null) \
-  || die "无法解析 release（空 release 或格式异常）"
-
-asset_names=()
-i=0
-while n=$(plutil -extract "assets.$i.name" raw -o - -- "$rel" 2>/dev/null); do
-  asset_names+=("$n")
-  i=$((i + 1))
-done
-[[ ${#asset_names[@]} -gt 0 ]] || die "release $tag 没有任何 asset"
-echo "找到 release: $tag"
 
 # ---------------------------------------------------------------------------
 # 拉取精简 manifest（必需；不从 asset 名降级，避免误装已移除的旧包）
@@ -258,23 +185,14 @@ echo "找到 release: $tag"
 # 并行数组：应用信息、源码 revision、实际 Electron 版本，顺序即 apps.json
 AID=(); ASLUG=(); ANAME=(); AURL=(); AREV=(); AEVER=()
 fetch_manifest || die "无法获取 ${MANIFEST_ASSET}（release 不完整或下载失败）"
-[[ ${#ASLUG[@]} -gt 0 ]] || die "release $tag 内无可安装的 $ASSET_SUFFIX 包"
-
-# manifest 里的 app 未必都已上传成功，只保留有对应 zip 的原始下标
-available_idx=()
-for k in "${!ASLUG[@]}"; do
-  zip="${AID[$k]:+${AID[$k]}-}${ASLUG[$k]}${ASSET_SUFFIX}"
-  asset_exists "$zip" && available_idx+=("$k")
-done
-[[ ${#available_idx[@]} -gt 0 ]] || die "release $tag 内无可安装的 $ASSET_SUFFIX 包"
 
 # ---------------------------------------------------------------------------
 # --list
 # ---------------------------------------------------------------------------
 
 if (( do_list )); then
-  echo "可安装应用 ($tag):"
-  for k in "${available_idx[@]}"; do
+  echo "可安装应用:"
+  for k in "${!ASLUG[@]}"; do
     printf '  %-12s %-16s %s — %s\n' "${AID[$k]}" "${ASLUG[$k]}" "${ANAME[$k]}" "${AURL[$k]}"
   done
   exit 0
@@ -293,16 +211,16 @@ fetch_checksums || die "无法获取 ${CHECKSUM_ASSET}，拒绝安装未校验�
 
 sel_idx=()
 if [[ ${#want_ids[@]} -eq 0 ]]; then
-  for k in "${available_idx[@]}"; do sel_idx+=("$k"); done
+  for k in "${!ASLUG[@]}"; do sel_idx+=("$k"); done
 else
   for w in "${want_ids[@]}"; do
     matched=0
     if [[ "$w" =~ ^[0-9]+$ ]]; then
-      for k in "${available_idx[@]}"; do
+      for k in "${!ASLUG[@]}"; do
         [[ "${AID[$k]}" == "$w" ]] && { add_idx "$k"; matched=1; }
       done
     else
-      for k in "${available_idx[@]}"; do
+      for k in "${!ASLUG[@]}"; do
         case "${ASLUG[$k]}" in *"$w"*) add_idx "$k"; matched=1 ;; esac
       done
     fi
@@ -311,7 +229,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 逐个下载并安装（下载-安装交错，按选中顺序）—— 三模式
+# 逐个下载并安装（下载-安装交错，按选中顺序）
 # ---------------------------------------------------------------------------
 
 install_one() {
@@ -321,7 +239,6 @@ install_one() {
   local zip="${id:+${id}-}${slug}${ASSET_SUFFIX}"
   local dest="$tmpdir/$zip" url extract_dir
 
-  # Electron 与源码 revision 均未变化才跳过；旧 manifest 无 revision 时仅比版本
   if is_current "$name" "$revision" "$electron_version"; then
     echo "[$name] 已是最新 ($electron_version)，跳过。用 --force 强制重装。"
     return 0
@@ -329,14 +246,9 @@ install_one() {
 
   echo ""
   echo "[$name] 下载 $zip ..."
-  if (( use_gh )); then
-    gh release download "$tag" --repo "$REPO" --pattern "$zip" \
-       --dir "$tmpdir" --clobber || { echo "[$name] 下载失败，跳过"; return 1; }
-  else
-    url=$(asset_url_by_name "$zip") || { echo "[$name] 在 release 中找不到 $zip，跳过"; return 1; }
-    (( use_mirror )) && url="$MIRROR/$url"
-    curl -fSL --retry 3 --progress-bar -o "$dest" "$url" || { echo "[$name] 下载失败，跳过"; return 1; }
-  fi
+  url="$DOWNLOAD_BASE/$zip"
+  (( use_mirror )) && url="$MIRROR/$url"
+  curl -fSL --retry 3 --progress-bar -o "$dest" "$url" || { echo "[$name] 下载失败，跳过"; return 1; }
 
   verify_zip "$zip" "$dest" || return 1
 

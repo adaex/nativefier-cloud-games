@@ -35,9 +35,9 @@ bundle ID 固定为 `io.github.adaex.cloudgames.{id}`。显示名与图标在构
 
 `packager/cli.ts` 在构建前拦截重复 id、slug 冲突、非整数 id、非法 URL 和非 HTTP(S) 协议；构建后按 Unicode 规范化且不区分大小写拦截重复显示名，避免安装时互相覆盖
 
-部分应用失败时，仍写出成功者的 `dist/manifest.json` 并以 0 退出，让 CI 能继续发布可用应用；全部失败才以非 0 退出。部分失败会输出警告和 GitHub Actions Step Summary
+所有应用串行构建，以复用 Electron 下载缓存。任一应用失败就以非 0 退出，不写 manifest；只有全部成功才生成 `dist/manifest.json`，CI 也只在全部成功后进入发布步骤
 
-`dist/manifest.json` 是构建阶段的内部清单，包含本地产物路径 `appPaths`；它与 Release 对外提供的 `release-manifest.json` 不是同一个文件。两者都由构建器生成，CI 只负责合并历史条目
+`dist/manifest.json` 是构建阶段的内部清单，包含本地产物路径 `appPaths`；它与 Release 对外提供的 `release-manifest.json` 不是同一个文件。两者都由构建器生成，后者只去掉本地产物路径
 
 ## 客户端运行时
 
