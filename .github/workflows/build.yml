@@ -8,15 +8,20 @@ on:
 permissions:
   contents: write
 
+# 同一 Release 的构建与上传必须串行，避免定时和手动运行交叉覆盖 asset
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24.15
+          node-version: 26.13
           cache: yarn
 
       - name: Install dependencies
@@ -34,7 +39,7 @@ jobs:
           echo "chromium=$chromium" >> "$GITHUB_OUTPUT"
 
       # Electron 二进制（~100MB）按版本缓存，避免每次全量下载
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/Library/Caches/electron
           key: electron-${{ steps.electron.outputs.version }}
@@ -79,37 +84,33 @@ jobs:
           else
             src=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')
           fi
-          carried=""
           if [ -n "$src" ]; then
             # 旧 release 可能还没有 manifest 文件（首次升级前）——下载不到就按无历史处理
             gh release download "$src" --pattern 'release-manifest.json' --dir /tmp --clobber \
               || echo "提示: $src 无 release-manifest.json,按首次发布处理"
-            carried=$(node -e "
-              const fs = require('fs');
-              const cur = JSON.parse(fs.readFileSync('dist/manifest.json','utf8'))
-                .map(({id,slug,name,url})=>({id,slug,name,url}));
-              let prev = [];
-              try { prev = JSON.parse(fs.readFileSync('/tmp/release-manifest.json','utf8')); } catch {}
-              const apps = JSON.parse(fs.readFileSync('apps.json','utf8'));
-              const keep = new Set(apps.map(a=>String(a.id)));
-              const order = new Map(apps.map((a,i)=>[String(a.id),i]));
-              const curIds = new Set(cur.map(e=>String(e.id)));
-              const carried = prev.filter(e=>!curIds.has(String(e.id)) && keep.has(String(e.id)));
-              const out = [...cur, ...carried]
-                .sort((a,b)=>order.get(String(a.id))-order.get(String(b.id)));
-              fs.writeFileSync('dist/release-manifest.json', JSON.stringify(out,null,2));
-              process.stdout.write(carried.map(e=>e.id+'-'+e.slug+'-darwin-arm64.zip').join(' '));
-            ")
+          fi
+          carried=$(node -e "
+            const fs = require('fs');
+            const cur = JSON.parse(fs.readFileSync('dist/release-manifest.json','utf8'));
+            let prev = [];
+            try { prev = JSON.parse(fs.readFileSync('/tmp/release-manifest.json','utf8')); } catch {}
+            const apps = JSON.parse(fs.readFileSync('apps.json','utf8'));
+            const keep = new Set(apps.map(a=>String(a.id)));
+            const order = new Map(apps.map((a,i)=>[String(a.id),i]));
+            const curIds = new Set(cur.map(e=>String(e.id)));
+            const fallbackElectron = '${src#v}';
+            const carried = prev.filter(e=>!curIds.has(String(e.id)) && keep.has(String(e.id)))
+              .map(e=>({...e,electronVersion:e.electronVersion??fallbackElectron}));
+            const out = [...cur, ...carried]
+              .sort((a,b)=>order.get(String(a.id))-order.get(String(b.id)));
+            fs.writeFileSync('dist/release-manifest.json', JSON.stringify(out,null,2));
+            process.stdout.write(carried.map(e=>e.id+'-'+e.slug+'-darwin-arm64.zip').join(' '));
+          ")
+          if [ -n "$src" ]; then
             for z in $carried; do
               gh release download "$src" --pattern "$z" --dir dist --clobber
               echo "携带旧包: $z (来自 $src)"
             done
-          else
-            node -e "
-              const m = require('./dist/manifest.json');
-              const out = m.map(({id,slug,name,url})=>({id,slug,name,url}));
-              require('fs').writeFileSync('dist/release-manifest.json', JSON.stringify(out,null,2));
-            "
           fi
 
       - name: Create Release

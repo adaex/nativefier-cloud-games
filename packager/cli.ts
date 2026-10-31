@@ -64,6 +64,9 @@ async function main() {
 
   preflight(apps);
 
+  // 只保留本次产物，避免部分失败或移除应用后，build-and-install 误装历史包
+  fs.rmSync(path.join(repoRoot, 'dist'), { recursive: true, force: true });
+
   const results: BuildResult[] = [];
   const failures: string[] = [];
 
@@ -90,15 +93,16 @@ async function main() {
     });
   }
 
-  // 构建后校验：name 来自 App Store，只能此时得知。撞名会让 packager 产物目录
-  // (name-platform-arch) 相同而互相覆盖，必须拦截。
+  // 构建后校验：name 来自 App Store，只能此时得知。同名应用会互相替换安装；
+  // macOS 默认文件系统不区分大小写，Unicode 规范化后再按小写检测冲突。
   const nameSeen = new Map<string, number>();
   const nameConflicts: string[] = [];
   for (const r of results) {
-    if (nameSeen.has(r.name)) {
-      nameConflicts.push(`name 冲突: "${r.name}"（id=${nameSeen.get(r.name)} 与 id=${r.id}），产物目录会互相覆盖`);
+    const key = r.name.normalize('NFKC').toLowerCase();
+    if (nameSeen.has(key)) {
+      nameConflicts.push(`name 冲突: "${r.name}"（id=${nameSeen.get(key)} 与 id=${r.id}），安装目录会互相覆盖`);
     } else {
-      nameSeen.set(r.name, r.id);
+      nameSeen.set(key, r.id);
     }
   }
   if (nameConflicts.length > 0) {
@@ -112,11 +116,13 @@ async function main() {
     process.exit(1);
   }
 
-  // 写 manifest（只含成功者），供 CI 定位产物、生成 release notes。
-  // 部分失败时仍写入成功者，让 CI 能发布可用的 app，而非整批报废。
+  // 写内部与对外 manifest（只含成功者），供 CI 定位产物、合并历史和生成 release notes。
+  // 部分失败时仍写入成功者；对外字段统一在这里裁剪，避免各发布分支重复实现。
   const distDir = path.join(repoRoot, 'dist');
   fs.mkdirSync(distDir, { recursive: true });
   fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify(results, null, 2));
+  const releaseManifest = results.map(({ appPaths, ...entry }) => entry);
+  fs.writeFileSync(path.join(distDir, 'release-manifest.json'), JSON.stringify(releaseManifest, null, 2));
 
   const total = results.reduce((n, r) => n + r.appPaths.length, 0);
   if (failures.length > 0) {

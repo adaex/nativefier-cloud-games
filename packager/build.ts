@@ -27,6 +27,10 @@ export interface BuildResult {
   slug: string;
   name: string;
   url: string;
+  /** 每个 zip 实际构建时使用的 Electron 版本，携带旧包时仍保留原值 */
+  electronVersion: string;
+  /** 源码版本；同 Electron 版本下的内容更新也借此触发重装 */
+  revision: string;
   appPaths: string[];
 }
 
@@ -76,6 +80,19 @@ function getElectronVersion(): string {
   ).trim();
   log.ok(`Electron 版本: ${cachedElectronVersion}`);
   return cachedElectronVersion;
+}
+
+let cachedSourceRevision: string | undefined;
+
+function getSourceRevision(): string {
+  if (!cachedSourceRevision) {
+    cachedSourceRevision = process.env.GITHUB_SHA || execFileSync(
+      'git',
+      ['rev-parse', 'HEAD'],
+      { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8' },
+    ).trim();
+  }
+  return cachedSourceRevision;
 }
 
 function pngToIcns(pngPath: string, tmpDir: string): string {
@@ -172,7 +189,7 @@ function writeInstallScript(appDir: string): void {
     'xattr -dr com.apple.quarantine "$app"',
     '# 无 /Applications 写权限（非管理员）时装进 ~/Applications',
     'if [ -w /Applications ]; then dest_base=/Applications; else dest_base="$HOME/Applications"; mkdir -p "$dest_base"; fi',
-    '# 原子替换：先 cp 到同卷临时目录，成功后再 rm 旧的 + mv 就位。',
+    '# 先 cp 到同卷临时目录，成功后再 rm 旧的 + mv 就位。',
     '# 避免 rm 先于 cp——若 cp 中途失败（磁盘满/中断），旧安装仍完好。',
     'dest="$dest_base/$name"',
     'if [ -e "$dest" ] && [ ! -w "$dest" ]; then echo "无权限替换 $dest（属主可能是其他用户），请先手动删除。"; exit 1; fi',
@@ -210,9 +227,11 @@ export async function build(config: AppConfig): Promise<BuildResult> {
   const bundleId = `io.github.adaex.cloudgames.${id}`;
   const country = config.country ?? 'cn';
   const electronVersion = getElectronVersion();
+  const revision = getSourceRevision();
   const platform = config.platform ?? process.platform;
   const arch = config.arch ?? os.arch();
-  const outDir = path.join(repoRoot, 'dist');
+  // 每个 app 独立输出目录，避免同名或大小写相近的名称在并行构建时争用目录
+  const outDir = path.join(repoRoot, 'dist', String(id));
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'packager-'));
   try {
@@ -260,6 +279,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
       name,
       appBundleId: bundleId,
       electronVersion,
+      extendInfo: { CloudGamesRevision: revision },
       platform: platform,
       arch: arch,
       out: outDir,
@@ -278,7 +298,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
         writeInstallScript(p);
       }
     }
-    return { id, slug, name, url: config.url, appPaths };
+    return { id, slug, name, url: config.url, electronVersion, revision, appPaths };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

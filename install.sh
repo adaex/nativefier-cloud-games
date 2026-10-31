@@ -83,9 +83,9 @@ add_idx() {
 }
 
 # 下载并解析精简 manifest（权威源，顺序 = apps.json）；
-# 成功填充并行数组 AID/ASLUG/ANAME/AURL 并返回 0，失败返回 1
+# 成功填充应用信息、源码 revision 和实际 Electron 版本，失败返回 1
 fetch_manifest() {
-  local mf="$tmpdir/$MANIFEST_ASSET" url j=0 id slug name murl
+  local mf="$tmpdir/$MANIFEST_ASSET" url j=0 id slug name murl rev ever
   if (( use_gh )); then
     gh release download "$tag" --repo "$REPO" --pattern "$MANIFEST_ASSET" \
        --dir "$tmpdir" --clobber >/dev/null 2>&1 || return 1
@@ -102,11 +102,16 @@ fetch_manifest() {
     id=$(plutil -extract "$j.id"   raw -o - -- "$mf" 2>/dev/null || printf '')
     name=$(plutil -extract "$j.name" raw -o - -- "$mf" 2>/dev/null || printf '')
     murl=$(plutil -extract "$j.url"  raw -o - -- "$mf" 2>/dev/null || printf '')
+    rev=$(plutil -extract "$j.revision" raw -o - -- "$mf" 2>/dev/null || printf '')
+    ever=$(plutil -extract "$j.electronVersion" raw -o - -- "$mf" 2>/dev/null || printf '')
     j=$((j + 1))
     # id/slug 是拼 zip 名（id-slug-*.zip）的关键，缺失则该项不可安装，跳过（不中断后续）
     [[ -n "$id" && -n "$slug" ]] || { echo "提示: manifest 第 $j 项缺 id/slug，已跳过。" >&2; continue; }
     [[ -n "$name" ]] || name="$slug"
+    # 兼容旧 manifest；新条目始终带有 electronVersion 和 revision
+    [[ -n "$ever" ]] || ever="${tag#v}"
     AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$name"); AURL+=("$murl")
+    AREV+=("$rev"); AEVER+=("$ever")
   done
   [[ ${#ASLUG[@]} -gt 0 ]]
 }
@@ -140,33 +145,27 @@ verify_zip() {
   fi
 }
 
-# 已安装版本的读取（/Applications 与 ~/Applications），无安装返回 1
-installed_version() {
-  local name="$1" base plist
+# 读取已安装应用的 Info.plist 字段（/Applications 与 ~/Applications）
+installed_info() {
+  local name="$1" key="$2" base plist
   for base in /Applications "$HOME/Applications"; do
     plist="$base/$name.app/Contents/Info.plist"
     [[ -f "$plist" ]] || continue
-    plutil -extract CFBundleShortVersionString raw -o - -- "$plist" 2>/dev/null && return 0
+    plutil -extract "$key" raw -o - -- "$plist" 2>/dev/null && return 0
   done
   return 1
 }
 
-# 降级：manifest 缺失时从 zip asset 名（id-slug-darwin-arm64.zip）解析 id/slug
-parse_zip_assets() {
-  local a rest id slug
-  for a in ${asset_names[@]+"${asset_names[@]}"}; do
-    case "$a" in
-      *"$ASSET_SUFFIX")
-        rest="${a%"$ASSET_SUFFIX"}"           # id-slug
-        if [[ "$rest" == [0-9]*-* ]]; then
-          id="${rest%%-*}"; slug="${rest#*-}"
-        else
-          id=""; slug="$rest"
-        fi
-        AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$slug"); AURL+=("")
-        ;;
-    esac
-  done
+# 新 manifest 同时比较实际 Electron 版本与源码 revision；旧 manifest 无 revision
+# 时保留原有版本判断。携带旧包使用其自身 Electron 版本，而不是当前 release tag
+is_current() {
+  local name="$1" revision="$2" electron_version="$3" cur_ver cur_rev
+  (( ! force )) || return 1
+  cur_ver=$(installed_info "$name" CFBundleShortVersionString) || return 1
+  [[ "$cur_ver" == "$electron_version" ]] || return 1
+  [[ -n "$revision" ]] || return 0
+  cur_rev=$(installed_info "$name" CloudGamesRevision) || return 1
+  [[ "$cur_rev" == "$revision" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -253,28 +252,21 @@ done
 echo "找到 release: $tag"
 
 # ---------------------------------------------------------------------------
-# 拉取精简 manifest（best-effort，失败则降级为只显示 id）
+# 拉取精简 manifest（必需；不从 asset 名降级，避免误装已移除的旧包）
 # ---------------------------------------------------------------------------
 
-# 并行数组：AID/ASLUG/ANAME/AURL，顺序即 apps.json（manifest）或 asset 名（降级）
-AID=(); ASLUG=(); ANAME=(); AURL=()
-have_manifest=0
-if fetch_manifest; then
-  have_manifest=1
-else
-  echo "提示: 未获取到 ${MANIFEST_ASSET}（可能是旧 release），从包名解析。" >&2
-  parse_zip_assets
-fi
+# 并行数组：应用信息、源码 revision、实际 Electron 版本，顺序即 apps.json
+AID=(); ASLUG=(); ANAME=(); AURL=(); AREV=(); AEVER=()
+fetch_manifest || die "无法获取 ${MANIFEST_ASSET}（release 不完整或下载失败）"
 [[ ${#ASLUG[@]} -gt 0 ]] || die "release $tag 内无可安装的 $ASSET_SUFFIX 包"
 
-# manifest 里的 app 未必都已上传成功，过滤掉 release 中缺失对应 zip 的项
-FID=(); FSLUG=(); FNAME=(); FURL=()
+# manifest 里的 app 未必都已上传成功，只保留有对应 zip 的原始下标
+available_idx=()
 for k in "${!ASLUG[@]}"; do
   zip="${AID[$k]:+${AID[$k]}-}${ASLUG[$k]}${ASSET_SUFFIX}"
-  asset_exists "$zip" || continue
-  FID+=("${AID[$k]}"); FSLUG+=("${ASLUG[$k]}"); FNAME+=("${ANAME[$k]}"); FURL+=("${AURL[$k]}")
+  asset_exists "$zip" && available_idx+=("$k")
 done
-[[ ${#FSLUG[@]} -gt 0 ]] || die "release $tag 内无可安装的 $ASSET_SUFFIX 包"
+[[ ${#available_idx[@]} -gt 0 ]] || die "release $tag 内无可安装的 $ASSET_SUFFIX 包"
 
 # ---------------------------------------------------------------------------
 # --list
@@ -282,26 +274,17 @@ done
 
 if (( do_list )); then
   echo "可安装应用 ($tag):"
-  for k in "${!FSLUG[@]}"; do
-    if (( have_manifest )); then
-      printf '  %-12s %-16s %s — %s\n' "${FID[$k]}" "${FSLUG[$k]}" "${FNAME[$k]}" "${FURL[$k]}"
-    else
-      printf '  %-12s %s\n' "${FID[$k]}" "${FSLUG[$k]}"
-    fi
+  for k in "${available_idx[@]}"; do
+    printf '  %-12s %-16s %s — %s\n' "${AID[$k]}" "${ASLUG[$k]}" "${ANAME[$k]}" "${AURL[$k]}"
   done
   exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# 拉取 zip 校验清单（best-effort；旧 release 没有则跳过校验并提示）
+# 拉取 zip 校验清单（必需；下载失败或文件缺失都拒绝继续安装）
 # ---------------------------------------------------------------------------
 
-have_checksums=0
-if fetch_checksums; then
-  have_checksums=1
-else
-  echo "提示: 未获取到 ${CHECKSUM_ASSET}（可能是旧 release），跳过下载完整性校验。" >&2
-fi
+fetch_checksums || die "无法获取 ${CHECKSUM_ASSET}，拒绝安装未校验的包"
 
 # ---------------------------------------------------------------------------
 # 选择要安装的应用索引：无参数 → 全部（按 apps.json 顺序）；
@@ -310,17 +293,17 @@ fi
 
 sel_idx=()
 if [[ ${#want_ids[@]} -eq 0 ]]; then
-  for k in "${!FSLUG[@]}"; do sel_idx+=("$k"); done
+  for k in "${available_idx[@]}"; do sel_idx+=("$k"); done
 else
   for w in "${want_ids[@]}"; do
     matched=0
     if [[ "$w" =~ ^[0-9]+$ ]]; then
-      for k in "${!FID[@]}"; do
-        [[ "${FID[$k]}" == "$w" ]] && { add_idx "$k"; matched=1; }
+      for k in "${available_idx[@]}"; do
+        [[ "${AID[$k]}" == "$w" ]] && { add_idx "$k"; matched=1; }
       done
     else
-      for k in "${!FSLUG[@]}"; do
-        case "${FSLUG[$k]}" in *"$w"*) add_idx "$k"; matched=1 ;; esac
+      for k in "${available_idx[@]}"; do
+        case "${ASLUG[$k]}" in *"$w"*) add_idx "$k"; matched=1 ;; esac
       done
     fi
     (( matched )) || die "未知 app: '$w'。用 './install.sh --list' 查看可选项。"
@@ -332,14 +315,15 @@ fi
 # ---------------------------------------------------------------------------
 
 install_one() {
-  local id="$1" slug="$2" name="$3"
+  local k="$1"
+  local id="${AID[$k]}" slug="${ASLUG[$k]}" name="${ANAME[$k]}"
+  local revision="${AREV[$k]}" electron_version="${AEVER[$k]}"
   local zip="${id:+${id}-}${slug}${ASSET_SUFFIX}"
-  local dest="$tmpdir/$zip" url extract_dir cur_ver
+  local dest="$tmpdir/$zip" url extract_dir
 
-  # 已装同版本（app 的 CFBundleShortVersionString 即构建时的 Electron 版本，
-  # 与 release tag 去 v 前缀一致）则跳过下载；降级模式无 name 时恒不命中
-  if (( ! force )) && cur_ver=$(installed_version "$name") && [[ "$cur_ver" == "${tag#v}" ]]; then
-    echo "[$name] 已是最新 ($cur_ver)，跳过。用 --force 强制重装。"
+  # Electron 与源码 revision 均未变化才跳过；旧 manifest 无 revision 时仅比版本
+  if is_current "$name" "$revision" "$electron_version"; then
+    echo "[$name] 已是最新 ($electron_version)，跳过。用 --force 强制重装。"
     return 0
   fi
 
@@ -354,9 +338,7 @@ install_one() {
     curl -fSL --retry 3 --progress-bar -o "$dest" "$url" || { echo "[$name] 下载失败，跳过"; return 1; }
   fi
 
-  if (( have_checksums )); then
-    verify_zip "$zip" "$dest" || return 1
-  fi
+  verify_zip "$zip" "$dest" || return 1
 
   echo "[$name] 解压并安装..."
   extract_dir="$tmpdir/${zip%.zip}"
@@ -375,7 +357,7 @@ echo ""
 echo "准备安装 ${#sel_idx[@]} 个应用..."
 fail=0
 for k in "${sel_idx[@]}"; do
-  install_one "${FID[$k]}" "${FSLUG[$k]}" "${FNAME[$k]}" || fail=$((fail + 1))
+  install_one "$k" || fail=$((fail + 1))
 done
 
 echo ""
