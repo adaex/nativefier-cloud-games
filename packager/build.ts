@@ -168,17 +168,28 @@ function writeInstallScript(appDir: string): void {
   const script = [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
+    '[[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || { echo "本安装器仅支持 macOS arm64"; exit 1; }',
     'cd "$(dirname "$0")"',
     'app=$(find . -maxdepth 1 -name "*.app" -type d | head -1)',
     'if [ -z "$app" ]; then echo "未找到 .app"; exit 1; fi',
     'name=$(basename "$app")',
+    'bundle_id=$(plutil -extract CFBundleIdentifier raw -o - -- "$app/Contents/Info.plist")',
     'xattr -dr com.apple.quarantine "$app"',
-    '# 无 /Applications 写权限（非管理员）时装进 ~/Applications',
-    'if [ -w /Applications ]; then dest_base=/Applications; else dest_base="$HOME/Applications"; mkdir -p "$dest_base"; fi',
-    '# 先 cp 到同卷临时目录，成功后再 rm 旧的 + mv 就位。',
-    '# 避免 rm 先于 cp——若 cp 中途失败（磁盘满/中断），旧安装仍完好。',
+    '# 远程安装器传入已选定的目录；独立运行时自行选择',
+    'dest_base=${CLOUD_GAMES_DEST_BASE:-}',
+    'if [ -z "$dest_base" ]; then',
+    '  # 无 /Applications 写权限（非管理员）时装进 ~/Applications',
+    '  if [ -w /Applications ]; then dest_base=/Applications; else dest_base="$HOME/Applications"; fi',
+    'fi',
+    'mkdir -p "$dest_base"',
+    '# 先 cp 到同卷临时目录，成功后再 rm 旧的 + mv 就位',
+    '# 避免 rm 先于 cp——若 cp 中途失败（磁盘满/中断），旧安装仍完好',
     'dest="$dest_base/$name"',
-    'if [ -e "$dest" ] && [ ! -w "$dest" ]; then echo "无权限替换 $dest（属主可能是其他用户），请先手动删除。"; exit 1; fi',
+    'if [ -e "$dest" ]; then',
+    '  installed_id=$(plutil -extract CFBundleIdentifier raw -o - -- "$dest/Contents/Info.plist" 2>/dev/null || true)',
+    '  if [ "$installed_id" != "$bundle_id" ]; then echo "拒绝替换 $dest：同名应用的 bundle id 不匹配"; exit 1; fi',
+    '  if [ ! -w "$dest" ]; then echo "无权限替换 $dest（属主可能是其他用户），请先手动删除"; exit 1; fi',
+    'fi',
     'tmp="$dest_base/.${name}.tmp.$$"',
     'rm -rf "$tmp"',
     'trap \'rm -rf "$tmp"\' EXIT',
@@ -207,11 +218,13 @@ export async function build(config: AppConfig): Promise<BuildResult> {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'packager-'));
   try {
+    // 应用源码与图标中间产物分开，避免 PNG、ICNS、iconset 被打进 app.asar
+    const sourceDir = path.join(tmpDir, 'app');
     const templateDir = path.join(import.meta.dirname, 'template');
-    fs.cpSync(templateDir, tmpDir, { recursive: true });
+    fs.cpSync(templateDir, sourceDir, { recursive: true });
 
     // 读取 template package.json，稍后与 version/name 一起写回（name 需先解析）
-    const pkgPath = path.join(tmpDir, 'package.json');
+    const pkgPath = path.join(sourceDir, 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
 
     // 从 App Store 拉取名称与图标地址（id 即查询键）
@@ -230,7 +243,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
     fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 
     fs.writeFileSync(
-      path.join(tmpDir, 'app.json'),
+      path.join(sourceDir, 'app.json'),
       JSON.stringify({ id, name, url: config.url }),
     );
 
@@ -241,7 +254,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
 
     log.info(`开始构建: ${name} (${id})`);
     const appPaths = await packager({
-      dir: tmpDir,
+      dir: sourceDir,
       name,
       appBundleId: bundleId,
       electronVersion,

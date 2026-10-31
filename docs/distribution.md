@@ -29,11 +29,11 @@ CI 和安装器必须使用同一个实际 asset 名 `release-manifest.json`。`
 | 仓库根 `install.sh` | 远程分发器：获取 release、选择并下载 zip、校验、解压，再调用包内安装器 |
 | zip 包内 `install.sh` | 单包安装器：由 `packager/build.ts` 的 `writeInstallScript` 生成，去除 quarantine，并替换已安装应用 |
 
-包内安装器优先写入 `/Applications`，无写权限时写入 `~/Applications`。复制先在目标卷的临时目录完成，再替换旧应用，避免复制中途失败时破坏旧版本；替换不是崩溃原子操作，进程在删除旧应用后、移动新应用前被强制终止时仍需重新安装
+包内安装器优先写入 `/Applications`，无写权限时写入 `~/Applications`。它只替换 bundle id 相同的已安装应用，遇到同名但 bundle id 不同的应用会拒绝覆盖。复制先在目标卷的临时目录完成，再替换旧应用，避免复制中途失败时破坏旧版本；替换不是崩溃原子操作，进程在删除旧应用后、移动新应用前被强制终止时仍需重新安装
 
 ## 根安装器约定
 
-- 必须获取 `release-manifest.json`；下载失败或文件缺失时直接退出，不从 zip 文件名降级，避免误装已移除的旧包
+- 必须获取 `release-manifest.json`；下载失败或文件缺失时直接退出，不从 zip 文件名降级，避免误装已移除的旧包。用于拼路径和资产名的 id、slug 会先做格式校验
 - 无位置参数时安装全部应用；纯数字参数按 id 精准匹配，其余参数按 slug 子串模糊匹配
 - 已安装应用的 Electron 版本与 manifest 一致，且源码 `CloudGamesRevision` 与 manifest 的 `revision` 一致时，默认跳过下载；缺少字段或值不同都会重装，`--force` 强制重装
 - 必须获取 `checksums.txt`，zip 匹配清单才能安装；下载失败、文件缺失或校验不一致都拒绝安装
@@ -57,4 +57,4 @@ bash -n install.sh
 
 `--list` 只读取远端 release，不安装应用。改动镜像下载逻辑时，再覆盖 `./install.sh --list --mirror`
 
-真实安装会替换 `/Applications` 或 `~/Applications` 中的同名应用，不要把安装命令当作只读检查。修改 CI 后可用 `workflow_dispatch` 做端到端验证，但它会实际更新 GitHub Release，需要核对 manifest、全部 zip 和 `checksums.txt`
+真实安装会替换 `/Applications` 或 `~/Applications` 中同 bundle id 的同名应用，不要把安装命令当作只读检查。修改 CI 后可用 `workflow_dispatch` 做端到端验证，但它会实际更新 GitHub Release，需要核对 manifest、全部 zip 和 `checksums.txt`

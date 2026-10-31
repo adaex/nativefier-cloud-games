@@ -42,6 +42,11 @@ const SITE_BASE = baseDomain(new URL(config.url).hostname);
 
 // 全屏加载失败提示页（断网 / 站点 502 时不再白屏）
 function showErrorPage(win, url, code, desc) {
+  const message = String(desc || code).replace(/[&<>]/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;',
+  })[c]);
+  // 作为脚本字符串而非 HTML 属性注入，兼容引号并阻止 </script> 提前闭合
+  const retryUrl = JSON.stringify(url).replace(/</g, '\\u003c');
   const html = `<!doctype html><meta charset="utf-8">
 <style>
   html,body{height:100%;margin:0;background:#111;color:#eee;
@@ -53,9 +58,14 @@ function showErrorPage(win, url, code, desc) {
     background:#3a7afe;color:#fff;cursor:pointer}
 </style>
 <div class="box">
-  <div>页面加载失败 <code>${desc || code}</code></div>
-  <button onclick="location.href='${url}'">重试</button>
-</div>`;
+  <div>页面加载失败 <code>${message}</code></div>
+  <button id="retry">重试</button>
+</div>
+<script>
+document.getElementById('retry').addEventListener('click', () => {
+  location.href = ${retryUrl};
+});
+</script>`;
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
 }
 
@@ -82,20 +92,28 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  // 页面内跳转：只允许留在同主域；跳外站交给系统浏览器，避免全屏窗口
-  // 被困在没有返回手段的外部页面。畸形 URL 解析失败时放行，交 Chromium 处理
-  win.webContents.on('will-navigate', (e, url) => {
-    if (!/^https?:/.test(url)) return;
-    let host;
+  // 页面内跳转与服务器重定向共用同一限制：仅 http(s) 同主域留在客户端，
+  // 外站交给系统浏览器，其他协议直接拒绝，避免全屏窗口进入无返回手段的页面
+  const handleNavigation = (e, url) => {
+    let target;
     try {
-      host = new URL(url).hostname;
+      target = new URL(url);
     } catch {
+      e.preventDefault();
       return;
     }
-    if (baseDomain(host) === SITE_BASE) return;
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+      e.preventDefault();
+      return;
+    }
+    if (baseDomain(target.hostname) === SITE_BASE) return;
     e.preventDefault();
-    shell.openExternal(url);
-  });
+    shell.openExternal(target.href).catch((error) => {
+      console.error('无法打开外部浏览器：', error);
+    });
+  };
+  win.webContents.on('will-navigate', handleNavigation);
+  win.webContents.on('will-redirect', handleNavigation);
 
   // data: 错误页自身失败不递归；-3 是主动取消，忽略
   win.webContents.on('did-fail-load', (_e, code, desc, failedUrl, isMainFrame) => {

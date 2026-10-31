@@ -9,8 +9,12 @@ function preflight(apps: AppConfig[]): void {
   const slugSeen = new Map<string, number>(); // slug → 首次出现的下标
   apps.forEach((app, i) => {
     const tag = `第 ${i + 1} 项`;
-    if (app.id === undefined || app.id === null || !Number.isInteger(app.id)) {
-      errors.push(`${tag}: id 必须是整数（App Store 数字 ID），实际为 ${JSON.stringify(app.id)}`);
+    if (app === null || typeof app !== 'object' || Array.isArray(app)) {
+      errors.push(`${tag}：必须是包含 id 和 url 的对象`);
+      return;
+    }
+    if (!Number.isSafeInteger(app.id) || app.id <= 0) {
+      errors.push(`${tag}：id 必须是正的安全整数（App Store 数字 ID），实际为 ${JSON.stringify(app.id)}`);
       return;
     }
     if (idSeen.has(app.id)) {

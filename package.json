@@ -6,7 +6,7 @@
   },
   "scripts": {
     "build": "node packager/cli.ts",
-    "build-and-install": "node packager/cli.ts && for d in dist/*/*/; do [ -x \"$d/install.sh\" ] && \"$d/install.sh\"; done"
+    "build-and-install": "node packager/cli.ts && for d in dist/*/*/; do \"$d/install.sh\" || exit; done"
   },
   "dependencies": {
     "@electron/packager": "^20.3.0"

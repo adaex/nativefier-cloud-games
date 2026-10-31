@@ -77,8 +77,11 @@ fetch_manifest() {
     rev=$(plutil -extract "$j.revision" raw -o - -- "$mf" 2>/dev/null || printf '')
     ever=$(plutil -extract "$j.electronVersion" raw -o - -- "$mf" 2>/dev/null || printf '')
     j=$((j + 1))
-    # id/slug 是拼 zip 名（id-slug-*.zip）的关键，缺失则该项不可安装，跳过（不中断后续）
-    [[ -n "$id" && -n "$slug" ]] || { echo "提示: manifest 第 $j 项缺 id/slug，已跳过。" >&2; continue; }
+    # id/slug 会进入本地路径与下载 URL，严格限制字符，避免恶意 manifest 路径穿越
+    if [[ ! "$id" =~ ^[0-9]+$ || ! "$slug" =~ ^[a-z0-9-]+$ ]]; then
+      echo "提示：manifest 第 $j 项的 id/slug 非法，已跳过" >&2
+      continue
+    fi
     [[ -n "$name" ]] || name="$slug"
     AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$name"); AURL+=("$murl")
     AREV+=("$rev"); AEVER+=("$ever")
@@ -109,24 +112,16 @@ verify_zip() {
   fi
 }
 
-# 读取已安装应用的 Info.plist 字段（/Applications 与 ~/Applications）
-installed_info() {
-  local name="$1" key="$2" base plist
-  for base in /Applications "$HOME/Applications"; do
-    plist="$base/$name.app/Contents/Info.plist"
-    [[ -f "$plist" ]] || continue
-    plutil -extract "$key" raw -o - -- "$plist" 2>/dev/null && return 0
-  done
-  return 1
-}
-
-# Electron 版本与源码 revision 都一致时才跳过；缺字段或值不同都会重装
+# 只检查包内安装器实际会写入的位置，并从同一份 Info.plist 读取版本与 revision
 is_current() {
-  local name="$1" revision="$2" electron_version="$3" cur_ver cur_rev
+  local name="$1" revision="$2" electron_version="$3" plist cur_ver cur_rev
   (( ! force )) || return 1
-  cur_ver=$(installed_info "$name" CFBundleShortVersionString) || return 1
+  [[ -n "$revision" && -n "$electron_version" ]] || return 1
+  plist="$dest_base/$name.app/Contents/Info.plist"
+  [[ -f "$plist" ]] || return 1
+  cur_ver=$(plutil -extract CFBundleShortVersionString raw -o - -- "$plist" 2>/dev/null) || return 1
   [[ "$cur_ver" == "$electron_version" ]] || return 1
-  cur_rev=$(installed_info "$name" CloudGamesRevision) || return 1
+  cur_rev=$(plutil -extract CloudGamesRevision raw -o - -- "$plist" 2>/dev/null) || return 1
   [[ "$cur_rev" == "$revision" ]]
 }
 
@@ -134,7 +129,11 @@ is_current() {
 # 前置检查 + 临时目录清理（作为独立进程，trap EXIT 天然生效，无需子 shell）
 # ---------------------------------------------------------------------------
 
-[[ "$(uname -s)" == "Darwin" ]] || die "本安装器仅支持 macOS。"
+[[ "$(uname -s)" == "Darwin" ]] || die "本安装器仅支持 macOS"
+[[ "$(uname -m)" == "arm64" ]] || die "本安装器仅支持 macOS arm64"
+
+# 整个远程安装流程只选择一次目录，并传给包内安装器，确保检查与安装指向同一位置
+if [ -w /Applications ]; then dest_base=/Applications; else dest_base="$HOME/Applications"; fi
 
 tmpdir=""
 cleanup() { [[ -n "$tmpdir" ]] && rm -rf -- "$tmpdir"; return 0; }
@@ -236,7 +235,7 @@ install_one() {
   local k="$1"
   local id="${AID[$k]}" slug="${ASLUG[$k]}" name="${ANAME[$k]}"
   local revision="${AREV[$k]}" electron_version="${AEVER[$k]}"
-  local zip="${id:+${id}-}${slug}${ASSET_SUFFIX}"
+  local zip="${id}-${slug}${ASSET_SUFFIX}"
   local dest="$tmpdir/$zip" url extract_dir
 
   if is_current "$name" "$revision" "$electron_version"; then
@@ -259,7 +258,7 @@ install_one() {
     echo "[$name] 解压失败，跳过"; return 1
   fi
   if [[ -f "$extract_dir/install.sh" ]]; then
-    ( cd "$extract_dir" && bash install.sh )
+    ( cd "$extract_dir" && CLOUD_GAMES_DEST_BASE="$dest_base" bash install.sh )
   else
     echo "[$name] 未找到包内 install.sh，跳过"; return 1
   fi
