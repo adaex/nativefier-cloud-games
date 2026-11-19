@@ -40,6 +40,7 @@ CI 和安装器必须使用同一个实际 asset 名 `release-manifest.json`。`
 - 已安装应用的 Electron 版本与 manifest 一致，且源码 `CloudGamesRevision` 与 manifest 的 `revision` 一致时，默认跳过下载；缺少字段或值不同都会重装，`--force` 强制重装
 - 必须获取 `checksums.txt`，zip 匹配清单才能安装；下载失败、文件缺失或校验不一致都拒绝安装
 - 下载只使用 macOS 自带的 `curl`。每次运行先直连 GitHub，从 `releases/latest` 的重定向取得 tag，之后只下载该 tag 下的文件，不依赖 `gh` 或 GitHub API 配额。`--mirror` 只代理 zip，版本、应用清单和校验清单都取自 GitHub，避免镜像缓存的旧清单导致跳过更新
+- 直连和镜像下载 zip 都不限制总时长；传输速度持续 60 秒低于每秒 1 字节时中止本次尝试，最多重试 3 次
 - 脚本必须自包含，支持 `curl ... | bash`，不能依赖仓库中的其他文件
 - 必须兼容 macOS 自带的 bash 3.2：不用关联数组、`mapfile`，并避免 `set -u` 下直接展开空数组；JSON 解析使用 macOS 自带的 `plutil`，不依赖 Python
 

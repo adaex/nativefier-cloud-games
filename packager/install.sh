@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || { echo "本安装器仅支持 macOS arm64"; exit 1; }
+[[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || { echo '请在搭载 Apple 芯片的 Mac 上使用原生终端运行安装命令' >&2; exit 1; }
 cd "$(dirname "$0")"
 app=$(find . -maxdepth 1 -name "*.app" -type d | head -1)
 if [ -z "$app" ]; then echo "未找到 .app"; exit 1; fi
@@ -19,8 +19,14 @@ dest="$dest_base/$name"
 previous=''
 if [ -e "$dest" ]; then
   installed_id=$(read_bundle_id "$dest" 2>/dev/null || true)
-  if [ "$installed_id" != "$bundle_id" ]; then echo "拒绝替换 ${dest}：同名应用的 bundle id 不匹配"; exit 1; fi
-  if [ ! -w "$dest" ]; then echo "无权限替换 ${dest}（属主可能是其他用户），请先手动删除"; exit 1; fi
+  if [ "$installed_id" != "$bundle_id" ]; then
+    printf '无法确认「%s」是这款游戏，已有的同名应用未被替换。请在访达中确认它的身份，再决定是否移走它\n' "$dest" >&2
+    exit 1
+  fi
+  if [ ! -w "$dest" ]; then
+    printf '当前账户不能更新「%s」，原有应用未改动。请使用有权更新该应用的账户重试\n' "$dest" >&2
+    exit 1
+  fi
 else
   # 首装或改名才查找旧包；日常更新走上面的同名路径
   for other in "$dest_base"/*.app; do

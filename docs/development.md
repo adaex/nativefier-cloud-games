@@ -49,7 +49,7 @@ bundle ID 固定为 `io.github.adaex.cloudgames.{id}`。每次构建先从 App S
 - User-Agent 去掉 Electron 和应用名段，避免云游戏站点因检测到你不是普通 Chrome 而降级或拒绝服务
 - 窗口没有标签页和返回导航；弹窗和主页面的外站跳转交给系统浏览器，只有同主域的 HTTP(S) 地址能在主页面打开。内嵌登录框的重定向不触发外部浏览器
 - 主域判断和构建时生成 slug 共用 `packager/template/compound-tlds.json` 中的复合后缀。新增后缀时，核对应用的 slug 和站内导航范围
-- 外部页面按不可信内容处理，保持 `contextIsolation: true`、`nodeIntegration: false`
+- 外部页面按不可信内容处理，保持 `contextIsolation: true`、`nodeIntegration: false`。只有与当前游戏入口同源（协议、主机和端口都相同）的页面可以请求全屏、锁定鼠标和锁定键盘；不授权麦克风、摄像头、通知等其他网页权限
 
 ## 验证
 

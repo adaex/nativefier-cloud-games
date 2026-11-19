@@ -33,15 +33,22 @@ function baseDomain(host) {
   const n = parts.length > 2 && compoundTlds.includes(last2) ? 3 : 2;
   return parts.slice(-n).join('.');
 }
-const SITE_BASE = baseDomain(new URL(config.url).hostname);
+const gameUrl = new URL(config.url);
+const SITE_BASE = baseDomain(gameUrl.hostname);
 
-// 全屏加载失败提示页（断网 / 站点 502 时不再白屏）
-function showErrorPage(win, url, code, desc) {
+// 只向游戏页面开放全屏和键鼠控制；按发起请求的页面判断，而不是按主窗口地址判断
+const gamePermissions = new Set(['fullscreen', 'pointerLock', 'keyboardLock']);
+function allowGamePermission(permission, requestingUrl) {
+  return gamePermissions.has(permission) && URL.parse(requestingUrl)?.origin === gameUrl.origin;
+}
+
+// 主页面加载失败时显示错误原因，并提供返回游戏首页的入口
+function showErrorPage(win, code, desc) {
   const message = String(desc || code).replace(/[&<>]/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;',
   })[c]);
   // 作为脚本字符串而非 HTML 属性注入，兼容引号并阻止 </script> 提前闭合
-  const retryUrl = JSON.stringify(url).replace(/</g, '\\u003c');
+  const homeUrl = JSON.stringify(config.url).replace(/</g, '\\u003c');
   const html = `<!doctype html><meta charset="utf-8">
 <style>
   html,body{height:100%;margin:0;background:#111;color:#eee;
@@ -53,12 +60,13 @@ function showErrorPage(win, url, code, desc) {
     background:#3a7afe;color:#fff;cursor:pointer}
 </style>
 <div class="box">
-  <div>页面加载失败 <code>${message}</code></div>
-  <button id="retry">重试</button>
+  <div>暂时无法打开游戏页面，请检查网络后再试</div>
+  <button id="retry">重新打开游戏首页</button>
+  <small>错误信息：<code>${message}</code></small>
 </div>
 <script>
 document.getElementById('retry').addEventListener('click', () => {
-  location.href = ${retryUrl};
+  location.href = ${homeUrl};
 });
 </script>`;
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
@@ -74,6 +82,12 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+
+  const { session } = win.webContents;
+  session.setPermissionCheckHandler((_contents, permission, requestingOrigin) =>
+    allowGamePermission(permission, requestingOrigin));
+  session.setPermissionRequestHandler((_contents, permission, callback, details) =>
+    callback(allowGamePermission(permission, details.requestingUrl)));
 
   const ua = cleanUserAgent();
   win.webContents.setUserAgent(ua);
@@ -113,7 +127,7 @@ function createWindow() {
   // data: 错误页自身失败不递归；-3 是主动取消，忽略
   win.webContents.on('did-fail-load', (_e, code, desc, failedUrl, isMainFrame) => {
     if (!isMainFrame || code === -3 || failedUrl.startsWith('data:')) return;
-    showErrorPage(win, config.url, code, desc);
+    showErrorPage(win, code, desc);
   });
 
   win.loadURL(config.url, { userAgent: ua });

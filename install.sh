@@ -28,25 +28,25 @@ CHECKSUM_ASSET="checksums.txt"          # CI 上传的 zip SHA256 清单
 # 函数定义（须在调用前）
 # ---------------------------------------------------------------------------
 
-die() { echo "错误: $*" >&2; exit 1; }
+die() { echo "错误：$*" >&2; exit 1; }
 
 print_help() {
   cat <<'EOF'
-用法: install.sh [选项] [app ...]
+用法：install.sh [选项] [安装编号或英文简称 ...]
 
-  无 app 参数    按 apps.json 顺序安装全部应用
-  指定 app       纯数字按 id 精准匹配；其余按 slug 子串模糊匹配
-                 （如: install.sh mihoyo  或  install.sh 1569029742）
+  不指定游戏时，安装或更新全部游戏；已经是最新版的不会重复下载
+  安装编号只选一款游戏，例如 1569029742 对应云·原神
+  英文简称可以只输入一部分，例如 mihoyo 会选中简称中含有 mihoyo 的所有游戏
 
-选项:
-  -l, --list     列出可安装的应用（id + slug + 名称 + 网址）后退出
-  -f, --force    已装同版本也强制重装（默认跳过）
-  -h, --help     显示本帮助
-      --mirror   通过镜像下载 zip，版本和清单仍从 GitHub 获取
-      --no-mirror  直连 GitHub（默认）
+选项：
+  -l, --list       列出游戏和安装编号，不安装任何应用
+  -f, --force      即使已经是最新版也重新安装
+  -h, --help       查看用法
+      --mirror     通过镜像下载安装包，仍从 GitHub 获取游戏列表和校验记录
+      --no-mirror  直接从 GitHub 下载（默认）
 
-远程一行安装:
-  curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/install.sh | bash -s -- ys-mihoyo
+只安装或更新云·原神：
+  curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/install.sh | bash -s -- 1569029742
 EOF
 }
 
@@ -79,6 +79,14 @@ fetch_manifest() {
   [[ ${#ASLUG[@]} -gt 0 ]]
 }
 
+print_games() {
+  local k
+  echo '可安装的游戏（用安装编号或英文简称选择）：'
+  for k in "${!ASLUG[@]}"; do
+    printf '  %s　安装编号：%s　英文简称：%s\n    %s\n' "${ANAME[$k]}" "${AID[$k]}" "${ASLUG[$k]}" "$(manifest_field "$k.url")"
+  done
+}
+
 # 下载 zip 的 SHA256 清单。注意：即使 --mirror 也始终直连 GitHub 获取——
 # 校验文件若走同一镜像，篡改者连校验值一起改，校验就失去意义
 fetch_checksums() {
@@ -89,15 +97,21 @@ fetch_checksums() {
 
 # 用 checksums.txt 校验已下载的 zip；清单中无此项或不一致均拒绝安装
 verify_zip() {
-  local zip="$1" file="$2" expected actual
-  expected=$(awk -v f="$zip" '$2 == f {print $1}' "$tmpdir/$CHECKSUM_ASSET")
+  local file="$1" name="$2" expected actual
+  expected=$(awk -v f="${file##*/}" '$2 == f {print $1}' "$tmpdir/$CHECKSUM_ASSET")
   if [[ -z "$expected" ]]; then
-    echo "校验清单中无 ${zip}，拒绝安装（release 不完整）" >&2
+    echo "【${name}】发布记录中没有这个安装包的校验值，本次未安装这款游戏。请稍后重试" >&2
     return 1
   fi
   actual=$(shasum -a 256 "$file" | awk '{print $1}')
   if [[ "$expected" != "$actual" ]]; then
-    echo "$zip 校验失败（期望 ${expected}，实际 ${actual}），拒绝安装——文件可能被篡改" >&2
+    echo "【${name}】安装包与发布记录不一致，本次未安装这款游戏，已有版本不受影响" >&2
+    if (( use_mirror )); then
+      echo '请去掉 --mirror 后重新运行安装命令，直接从 GitHub 下载' >&2
+    else
+      echo '请稍后重新运行安装命令' >&2
+    fi
+    printf '校验值（SHA-256）：\n  发布记录：%s\n  下载文件：%s\n' "$expected" "$actual" >&2
     return 1
   fi
 }
@@ -114,7 +128,7 @@ skip_if_current() {
   revision=$(manifest_field "$k.revision")
   cur_rev=$(plutil -extract CloudGamesRevision raw -o - -- "$plist" 2>/dev/null) || return 1
   [[ -n "$revision" && "$cur_rev" == "$revision" ]] || return 1
-  echo "[$name] 已是最新 ($electron_version)，跳过。用 --force 强制重装。"
+  echo "【${name}】已是最新版，无需下载"
 }
 
 # ---------------------------------------------------------------------------
@@ -122,7 +136,7 @@ skip_if_current() {
 # ---------------------------------------------------------------------------
 
 [[ "$(uname -s)" == "Darwin" ]] || die "本安装器仅支持 macOS"
-[[ "$(uname -m)" == "arm64" ]] || die "本安装器仅支持 macOS arm64"
+[[ "$(uname -m)" == "arm64" ]] || die '请在搭载 Apple 芯片的 Mac 上使用原生终端运行安装命令'
 
 # 整个远程安装流程只选择一次目录，并传给包内安装器，确保检查与安装指向同一位置
 if [ -w /Applications ]; then dest_base=/Applications; else dest_base="$HOME/Applications"; fi
@@ -185,18 +199,9 @@ fetch_manifest || die "无法获取 ${MANIFEST_ASSET}（release 不完整或下�
 # ---------------------------------------------------------------------------
 
 if (( do_list )); then
-  echo "可安装应用:"
-  for k in "${!ASLUG[@]}"; do
-    printf '  %-12s %-16s %s — %s\n' "${AID[$k]}" "${ASLUG[$k]}" "${ANAME[$k]}" "$(manifest_field "$k.url")"
-  done
+  print_games
   exit 0
 fi
-
-# ---------------------------------------------------------------------------
-# 拉取 zip 校验清单（必需；下载失败或文件缺失都拒绝继续安装）
-# ---------------------------------------------------------------------------
-
-fetch_checksums || die "无法获取 ${CHECKSUM_ASSET}，拒绝安装未校验的包"
 
 # ---------------------------------------------------------------------------
 # 选择要安装的应用索引：无参数 → 全部（按 apps.json 顺序）；
@@ -218,9 +223,15 @@ else
       add_idx "$k"
       matched=1
     done
-    (( matched )) || die "未知 app: '$w'。用 './install.sh --list' 查看可选项。"
+    if (( ! matched )); then
+      printf '没有找到「%s」。请从下面选择安装编号或英文简称，替换刚才命令里的游戏参数\n' "$w" >&2
+      print_games >&2
+      exit 1
+    fi
   done
 fi
+
+fetch_checksums || die '无法从 GitHub 获取安装包的校验记录，未开始安装。请检查网络后重试'
 
 # ---------------------------------------------------------------------------
 # 逐个下载并安装（下载-安装交错，按选中顺序）
@@ -234,27 +245,34 @@ install_one() {
   mkdir -p "$extract_dir" || return 1
 
   echo ""
-  echo "[$name] 下载 $zip ..."
+  echo "【${name}】正在下载安装包"
   url="$DOWNLOAD_BASE/$zip"
   (( use_mirror )) && url="$MIRROR/$url"
-  curl -fSL --retry 3 --progress-bar -o "$dest" "$url" || { echo "[$name] 下载失败，跳过"; return 1; }
+  curl -fSL --retry 3 --speed-limit 1 --speed-time 60 --progress-bar -o "$dest" "$url" || {
+    if [[ $? -eq 28 ]]; then
+      echo "【${name}】下载超时，这款游戏未安装。请检查网络后重新运行安装命令" >&2
+    else
+      echo "【${name}】未能下载安装包。请检查网络后重试" >&2
+    fi
+    return 1
+  }
 
-  verify_zip "$zip" "$dest" || return 1
+  verify_zip "$dest" "$name" || return 1
 
-  echo "[$name] 解压并安装..."
+  echo "【${name}】正在解压并安装"
   if ! unzip -qo "$dest" -d "$extract_dir"; then
-    echo "[$name] 解压失败，跳过"; return 1
+    echo "【${name}】无法解压安装包，这次没有安装。请重新下载后再试" >&2; return 1
   fi
   rm -f -- "$dest" || return 1
   if [[ -f "$extract_dir/install.sh" ]]; then
     ( cd "$extract_dir" && CLOUD_GAMES_DEST_BASE="$dest_base" bash install.sh )
   else
-    echo "[$name] 未找到包内 install.sh，跳过"; return 1
+    echo "【${name}】安装包缺少安装脚本，本次未安装这款游戏" >&2; return 1
   fi
 }
 
 echo ""
-echo "准备安装 ${#sel_idx[@]} 个应用..."
+echo "正在检查 ${#sel_idx[@]} 款游戏是否需要安装或更新"
 fail=0
 package_dir="$tmpdir/package"
 for k in "${sel_idx[@]}"; do
@@ -265,7 +283,7 @@ done
 
 echo ""
 if (( fail )); then
-  echo "完成，$fail 个应用失败。"
+  echo "有 $fail 款游戏未能完成安装或更新，请查看上方提示" >&2
   exit 1
 fi
-echo "全部完成。"
+echo "所选游戏均已是最新版"
