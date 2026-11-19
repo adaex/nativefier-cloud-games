@@ -64,22 +64,35 @@ jobs:
         env:
           ELECTRON_VERSION: ${{ steps.electron.outputs.version }}
 
-      # manifest 是后续 Zip / Release 的唯一数据源，集中校验一次；
-      # 之后的 step 直接信任它非空（process substitution 会吞掉退出码，故不在其内重复校验）
+      # 所有分支都校验清单，只有默认分支会继续压缩和发布
       - name: Verify manifest
         run: node -e "const m=require('./dist/manifest.json'); if(!Array.isArray(m)||m.length===0){console.error('❌ dist/manifest.json 为空或缺失');process.exit(1)}"
 
-      - name: Zip apps
+      - name: Zip apps and write release notes
         if: github.ref_name == github.event.repository.default_branch
+        env:
+          ELECTRON_VER: ${{ steps.electron.outputs.version }}
         run: |
           set -euo pipefail
-          # zip 名用 id-slug（数字 id 防撞 + 域名 slug 可读）
-          while IFS=$'\t' read -r app_id app_slug app_dir; do
-            app=$(find "$app_dir" -maxdepth 1 -name "*.app" -type d | head -1)
-            if [ -z "$app" ]; then echo "❌ 未找到 .app: $app_dir"; exit 1; fi
-            ditto -c -k "$app_dir" "dist/${app_id}-${app_slug}-darwin-arm64.zip"
-            echo "Zipped: ${app_id}-${app_slug}-darwin-arm64.zip"
-          done < <(node -e "for(const a of require('./dist/manifest.json')) process.stdout.write(a.id+'\t'+a.slug+'\t'+a.appPaths[0]+'\n')")
+          notes="$RUNNER_TEMP/release-notes.md"
+          printf '基于 Electron %s 构建的 macOS arm64 云游戏客户端。\n\n### 包含应用\n\n' "$ELECTRON_VER" > "$notes"
+          node -e "for (const a of require('./dist/manifest.json')) console.log([a.id, a.slug, a.appPaths[0], a.name, a.url].join('\t'))" |
+            while IFS=$'\t' read -r app_id app_slug app_dir app_name app_url; do
+              app=$(find "$app_dir" -maxdepth 1 -name '*.app' -type d | head -1)
+              if [ -z "$app" ]; then echo "❌ 未找到 .app: $app_dir" >&2; exit 1; fi
+              zip_file="dist/${app_id}-${app_slug}-darwin-arm64.zip"
+              ditto -c -k "$app_dir" "$zip_file"
+              size=$(du -h "$zip_file" | awk '{print $1}')
+              printf -- '- **%s** — %s (%s)\n' "$app_name" "$app_url" "$size" >> "$notes"
+              echo "Zipped: ${zip_file##*/}"
+            done
+          {
+            echo ""
+            echo "### 安装方式"
+            echo ""
+            echo "1. 下载对应的 zip 文件并解压"
+            echo '2. 在解压目录中运行 `./install.sh`（会自动移除隔离标记并复制到 /Applications）'
+          } >> "$notes"
 
       - name: Create Release
         if: github.ref_name == github.event.repository.default_branch
@@ -89,34 +102,14 @@ jobs:
         run: |
           set -euo pipefail
           tag="v${ELECTRON_VER}"
-
-          # 生成应用列表（含文件大小），数据来自本次精简 manifest
-          apps=""
-          while IFS=$'\t' read -r app_id app_slug app_name app_url; do
-            zip_file="dist/${app_id}-${app_slug}-darwin-arm64.zip"
-            size=$(du -h "$zip_file" | cut -f1 | xargs)
-            apps="${apps}- **${app_name}** — ${app_url} (${size})"$'\n'
-          done < <(node -e "for(const a of require('./dist/release-manifest.json')) process.stdout.write(a.id+'\t'+a.slug+'\t'+a.name+'\t'+a.url+'\n')")
-
-          {
-            echo "基于 Electron ${ELECTRON_VER} 构建的 macOS arm64 云游戏客户端。"
-            echo ""
-            echo "### 包含应用"
-            echo ""
-            printf "%s" "$apps"
-            echo ""
-            echo "### 安装方式"
-            echo ""
-            echo "1. 下载对应的 zip 文件并解压"
-            echo '2. 在解压目录中运行 `./install.sh`（会自动移除隔离标记并复制到 /Applications）'
-          } > /tmp/release-notes.md
+          notes="$RUNNER_TEMP/release-notes.md"
 
           # zip 的 SHA256 校验值，安装器下载后校验完整性（镜像下载场景的防篡改手段）
           (cd dist && shasum -a 256 *.zip > checksums.txt)
 
           # 新版本先建草稿；已有版本（含上次上传失败留下的草稿）就地更新
           if ! gh release view "$tag" > /dev/null 2>&1; then
-            gh release create "$tag" --draft --target "$(git rev-parse HEAD)" --title "$tag" --notes-file /tmp/release-notes.md
+            gh release create "$tag" --draft --target "$(git rev-parse HEAD)" --title "$tag" --notes-file "$notes"
           fi
           gh release upload "$tag" dist/*.zip dist/release-manifest.json dist/checksums.txt --clobber
-          gh release edit "$tag" --draft=false --latest --title "$tag" --notes-file /tmp/release-notes.md
+          gh release edit "$tag" --draft=false --latest --title "$tag" --notes-file "$notes"

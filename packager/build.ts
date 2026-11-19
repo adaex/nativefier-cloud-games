@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { packager } from '@electron/packager';
+import compoundTlds from './template/compound-tlds.json' with { type: 'json' };
 
 export const repoRoot = path.join(import.meta.dirname, '..');
 const iconsDir = path.join(repoRoot, 'icons');
@@ -22,34 +23,29 @@ export interface AppConfig {
   country?: string;
 }
 
-export interface BuildResult {
+interface BuildVersion {
+  electronVersion: string;
+  revision: string;
+}
+
+export interface BuildResult extends BuildVersion {
   id: number;
   /** 对外标识：由 url 域名派生的可读 slug，用于 zip 名与安装器选应用 */
   slug: string;
   name: string;
   url: string;
-  /** 构建使用的 Electron 版本 */
-  electronVersion: string;
-  /** 源码版本；同 Electron 版本下的内容更新也借此触发重装 */
-  revision: string;
   appPaths: string[];
 }
-
-/** 常见复合 TLD（二级后缀），派生 slug 时需整体去掉 */
-const COMPOUND_TLDS = new Set([
-  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
-  'com.hk', 'com.tw', 'co.jp', 'or.jp', 'co.uk', 'org.uk', 'com.au', 'com.br',
-]);
 
 /**
  * 由 url 域名派生对外可读 slug：hostname 去 www 前缀、去顶级域名（含 com.cn 等
  * 复合 TLD）、其余段用连字符拼接。
  * 例：https://ys.mihoyo.com/... → ys-mihoyo；https://www.migufun.com/... → migufun
  */
-export function deriveSlug(url: string): string {
-  const host = new URL(url).hostname.replace(/^www\./, '');
+export function deriveSlug(url: URL): string {
+  const host = url.hostname.replace(/^www\./, '');
   const parts = host.split('.');
-  if (parts.length > 2 && COMPOUND_TLDS.has(parts.slice(-2).join('.'))) {
+  if (parts.length > 2 && compoundTlds.includes(parts.slice(-2).join('.'))) {
     parts.splice(-2); // 复合 TLD 整体去掉
   } else if (parts.length > 1) {
     parts.pop(); // 普通 TLD
@@ -62,47 +58,36 @@ export function deriveSlug(url: string): string {
 const log = {
   info: (msg: string) => console.log(`\x1b[36m[INFO] ${msg}\x1b[0m`),
   ok: (msg: string) => console.log(`\x1b[32m[ OK ] ${msg}\x1b[0m`),
-  err: (msg: string) => console.error(`\x1b[31m[ERR ] ${msg}\x1b[0m`),
 };
 
-let cachedElectronVersion: string | undefined;
-
-function getElectronVersion(): string {
-  if (cachedElectronVersion) return cachedElectronVersion;
-  if (process.env.ELECTRON_VERSION) {
-    cachedElectronVersion = process.env.ELECTRON_VERSION;
-    log.ok(`Electron 版本 (env): ${cachedElectronVersion}`);
-    return cachedElectronVersion;
+export function getBuildVersion(): BuildVersion {
+  let electronVersion = process.env.ELECTRON_VERSION;
+  if (!electronVersion) {
+    log.info('正在获取最新 Electron 版本...');
+    electronVersion = execFileSync('npm', ['view', 'electron', 'version', '--registry', NPM_REGISTRY], { encoding: 'utf8' }).trim();
   }
-  log.info('正在获取最新 Electron 版本...');
-  cachedElectronVersion = execFileSync(
-    'npm', ['view', 'electron', 'version', '--registry', NPM_REGISTRY],
-    { encoding: 'utf8' },
-  ).trim();
-  log.ok(`Electron 版本: ${cachedElectronVersion}`);
-  return cachedElectronVersion;
-}
-
-let cachedSourceRevision: string | undefined;
-
-function getSourceRevision(): string {
-  if (!cachedSourceRevision) {
-    cachedSourceRevision = execFileSync(
-      'git',
-      ['rev-parse', 'HEAD'],
-      { cwd: repoRoot, encoding: 'utf8' },
-    ).trim();
-  }
-  return cachedSourceRevision;
+  log.ok(`Electron 版本: ${electronVersion}`);
+  const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+  return { electronVersion, revision };
 }
 
 function pngToIcns(pngPath: string, tmpDir: string): string {
   const iconsetDir = path.join(tmpDir, 'app.iconset');
   fs.mkdirSync(iconsetDir);
-  const sizes = [16, 32, 128, 256, 512];
-  for (const s of sizes) {
-    execFileSync('sips', ['-z', `${s}`, `${s}`, pngPath, '--out', path.join(iconsetDir, `icon_${s}x${s}.png`)], { stdio: 'pipe' });
-    execFileSync('sips', ['-z', `${s * 2}`, `${s * 2}`, pngPath, '--out', path.join(iconsetDir, `icon_${s}x${s}@2x.png`)], { stdio: 'pipe' });
+  // 缓存原图为 1024 像素，普通图标与 @2x 图标中相同的像素尺寸也可复用
+  const rendered = new Map<number, string>([[1024, pngPath]]);
+  for (const size of [16, 32, 128, 256, 512]) {
+    for (const scale of [1, 2]) {
+      const pixels = size * scale;
+      const output = path.join(iconsetDir, `icon_${size}x${size}${scale === 2 ? '@2x' : ''}.png`);
+      const existing = rendered.get(pixels);
+      if (existing) {
+        fs.copyFileSync(existing, output);
+      } else {
+        execFileSync('sips', ['-z', String(pixels), String(pixels), pngPath, '--out', output]);
+        rendered.set(pixels, output);
+      }
+    }
   }
   const icnsPath = path.join(tmpDir, 'app.icns');
   execFileSync('iconutil', ['-c', 'icns', iconsetDir, '-o', icnsPath], { stdio: 'pipe' });
@@ -189,65 +174,44 @@ export async function refreshIcon({ id, country = 'cn' }: AppConfig): Promise<vo
   }
 }
 
-export async function build(config: AppConfig & { name: string }): Promise<BuildResult> {
-  const { id, name } = config;
-  const slug = deriveSlug(config.url);
-  const bundleId = `io.github.adaex.cloudgames.${id}`;
-  const electronVersion = getElectronVersion();
-  const revision = getSourceRevision();
-  // 每个 app 独立输出目录，避免同名或大小写相近的名称争用目录
-  const outDir = path.join(repoRoot, 'dist', String(id));
+export async function build(
+  { id, slug, name, url }: AppConfig & { slug: string; name: string },
+  { electronVersion, revision }: BuildVersion,
+): Promise<BuildResult> {
+  using tmp = fs.mkdtempDisposableSync(path.join(os.tmpdir(), 'packager-'));
+  // 应用源码与图标中间产物分开，避免 PNG、ICNS、iconset 被打进 app.asar
+  const sourceDir = path.join(tmp.path, 'app');
+  fs.cpSync(path.join(import.meta.dirname, 'template'), sourceDir, { recursive: true });
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'packager-'));
-  try {
-    // 应用源码与图标中间产物分开，避免 PNG、ICNS、iconset 被打进 app.asar
-    const sourceDir = path.join(tmpDir, 'app');
-    const templateDir = path.join(import.meta.dirname, 'template');
-    fs.cpSync(templateDir, sourceDir, { recursive: true });
+  // npm 包名使用数字 id，Electron 菜单通过 productName 显示真实名称
+  const pkgPath = path.join(sourceDir, 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  pkg.version = electronVersion;
+  pkg.name = String(id);
+  pkg.productName = name;
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+  fs.writeFileSync(path.join(sourceDir, 'app.json'), JSON.stringify({ id, url }));
 
-    // 读取 template package.json，稍后与 version/name 一起写回（name 需先解析）
-    const pkgPath = path.join(sourceDir, 'package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  const icon = pngToIcns(path.join(iconsDir, `${id}.png`), tmp.path);
+  log.info(`开始构建: ${name} (${id})`);
+  const appPaths = await packager({
+    dir: sourceDir,
+    name,
+    appBundleId: `io.github.adaex.cloudgames.${id}`,
+    electronVersion,
+    extendInfo: { CloudGamesRevision: revision },
+    platform: 'darwin',
+    arch: 'arm64',
+    out: path.join(repoRoot, 'dist', String(id)),
+    overwrite: true,
+    icon,
+    quiet: true,
+    download: ELECTRON_MIRROR ? { mirrorOptions: { mirror: ELECTRON_MIRROR } } : undefined,
+  });
 
-    // package.json：version 对齐 Electron；productName 设为真实名，使
-    // app.getName() 返回真实名（菜单 About/Quit 显示真实名）。name 保持
-    // ASCII id 以符合 npm 规范，app.getName() 优先读 productName。
-    pkg.version = electronVersion;
-    pkg.name = String(id);
-    pkg.productName = name;
-    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
-
-    fs.writeFileSync(
-      path.join(sourceDir, 'app.json'),
-      JSON.stringify({ id, name, url: config.url }),
-    );
-
-    const icon = pngToIcns(path.join(iconsDir, `${id}.png`), tmpDir);
-
-    log.info(`开始构建: ${name} (${id})`);
-    const appPaths = await packager({
-      dir: sourceDir,
-      name,
-      appBundleId: bundleId,
-      electronVersion,
-      extendInfo: { CloudGamesRevision: revision },
-      platform: 'darwin',
-      arch: 'arm64',
-      out: outDir,
-      overwrite: true,
-      icon,
-      quiet: true,
-      download: ELECTRON_MIRROR
-        ? { mirrorOptions: { mirror: ELECTRON_MIRROR } }
-        : undefined,
-    });
-
-    for (const p of appPaths) {
-      log.ok(`输出: ${p}`);
-      fs.copyFileSync(path.join(import.meta.dirname, 'install.sh'), path.join(p, 'install.sh'));
-    }
-    return { id, slug, name, url: config.url, electronVersion, revision, appPaths };
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  for (const p of appPaths) {
+    log.ok(`输出: ${p}`);
+    fs.copyFileSync(path.join(import.meta.dirname, 'install.sh'), path.join(p, 'install.sh'));
   }
+  return { id, slug, name, url, electronVersion, revision, appPaths };
 }

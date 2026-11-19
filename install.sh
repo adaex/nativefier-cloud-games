@@ -59,30 +59,22 @@ add_idx() {
   sel_idx+=("$x")
 }
 
-# 下载并解析精简 manifest（权威源，顺序 = apps.json）；
-# 成功填充应用信息、源码 revision 和实际 Electron 版本，失败返回 1
+manifest_field() { plutil -extract "$1" raw -o - -- "$manifest" 2>/dev/null || true; }
+
 fetch_manifest() {
-  local mf="$tmpdir/$MANIFEST_ASSET" j=0 id slug name murl rev ever
-  curl -fsSL "$DOWNLOAD_BASE/$MANIFEST_ASSET" -o "$mf" || return 1
-  [[ -f "$mf" ]] || return 1
-  # 循环条件用「第 j 项对象是否存在」，而非某字段提取成功——
-  # 否则某项缺 slug 会让循环提前终止、静默丢弃其后所有 app。
-  while plutil -extract "$j" raw -o /dev/null -- "$mf" 2>/dev/null; do
-    slug=$(plutil -extract "$j.slug" raw -o - -- "$mf" 2>/dev/null || printf '')
-    id=$(plutil -extract "$j.id"   raw -o - -- "$mf" 2>/dev/null || printf '')
-    name=$(plutil -extract "$j.name" raw -o - -- "$mf" 2>/dev/null || printf '')
-    murl=$(plutil -extract "$j.url"  raw -o - -- "$mf" 2>/dev/null || printf '')
-    rev=$(plutil -extract "$j.revision" raw -o - -- "$mf" 2>/dev/null || printf '')
-    ever=$(plutil -extract "$j.electronVersion" raw -o - -- "$mf" 2>/dev/null || printf '')
-    j=$((j + 1))
-    # id/slug 会进入本地路径与下载 URL，严格限制字符，避免恶意 manifest 路径穿越
+  local j id slug name
+  curl -fsSL "$DOWNLOAD_BASE/$MANIFEST_ASSET" -o "$manifest" || return 1
+  # 保留清单原始下标，后面只读取列出或安装所需的字段
+  for ((j = 0; ; j++)); do
+    plutil -extract "$j" raw -o /dev/null -- "$manifest" 2>/dev/null || break
+    id=$(manifest_field "$j.id")
+    slug=$(manifest_field "$j.slug")
     if [[ ! "$id" =~ ^[0-9]+$ || ! "$slug" =~ ^[a-z0-9-]+$ ]]; then
-      echo "提示：manifest 第 $j 项的 id/slug 非法，已跳过" >&2
+      echo "提示：manifest 第 $((j + 1)) 项的 id/slug 非法，已跳过" >&2
       continue
     fi
-    [[ -n "$name" ]] || name="$slug"
-    AID+=("$id"); ASLUG+=("$slug"); ANAME+=("$name"); AURL+=("$murl")
-    AREV+=("$rev"); AEVER+=("$ever")
+    name=$(manifest_field "$j.name")
+    AID[j]="$id"; ASLUG[j]="$slug"; ANAME[j]="${name:-$slug}"
   done
   [[ ${#ASLUG[@]} -gt 0 ]]
 }
@@ -111,20 +103,22 @@ verify_zip() {
 }
 
 # 只检查包内安装器实际会写入的位置，并从同一份 Info.plist 读取版本与 revision
-is_current() {
-  local name="$1" revision="$2" electron_version="$3" plist cur_ver cur_rev
+skip_if_current() {
+  local k="$1" name="${ANAME[$1]}" plist electron_version revision cur_ver cur_rev
   (( ! force )) || return 1
-  [[ -n "$revision" && -n "$electron_version" ]] || return 1
   plist="$dest_base/$name.app/Contents/Info.plist"
   [[ -f "$plist" ]] || return 1
+  electron_version=$(manifest_field "$k.electronVersion")
   cur_ver=$(plutil -extract CFBundleShortVersionString raw -o - -- "$plist" 2>/dev/null) || return 1
-  [[ "$cur_ver" == "$electron_version" ]] || return 1
+  [[ -n "$electron_version" && "$cur_ver" == "$electron_version" ]] || return 1
+  revision=$(manifest_field "$k.revision")
   cur_rev=$(plutil -extract CloudGamesRevision raw -o - -- "$plist" 2>/dev/null) || return 1
-  [[ "$cur_rev" == "$revision" ]]
+  [[ -n "$revision" && "$cur_rev" == "$revision" ]] || return 1
+  echo "[$name] 已是最新 ($electron_version)，跳过。用 --force 强制重装。"
 }
 
 # ---------------------------------------------------------------------------
-# 前置检查 + 临时目录清理（作为独立进程，trap EXIT 天然生效，无需子 shell）
+# 检查平台并选择安装目录
 # ---------------------------------------------------------------------------
 
 [[ "$(uname -s)" == "Darwin" ]] || die "本安装器仅支持 macOS"
@@ -132,10 +126,6 @@ is_current() {
 
 # 整个远程安装流程只选择一次目录，并传给包内安装器，确保检查与安装指向同一位置
 if [ -w /Applications ]; then dest_base=/Applications; else dest_base="$HOME/Applications"; fi
-
-tmpdir=""
-cleanup() { [[ -n "$tmpdir" ]] && rm -rf -- "$tmpdir"; return 0; }
-trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
 # 参数解析：分离位置参数（app id）与 flags
@@ -153,7 +143,7 @@ while [[ $# -gt 0 ]]; do
     -l|--list)   do_list=1 ;;
     -f|--force)  force=1 ;;
     -h|--help)   print_help; exit 0 ;;
-    --)          shift; while [[ $# -gt 0 ]]; do want_ids+=("$1"); shift; done; break ;;
+    --)          shift; want_ids+=("$@"); break ;;
     -*)          die "未知选项: $1（用 --help 查看用法）" ;;
     *)           want_ids+=("$1") ;;
   esac
@@ -174,6 +164,8 @@ command -v curl   >/dev/null 2>&1 || die "缺少 curl"
 # ---------------------------------------------------------------------------
 
 tmpdir=$(mktemp -d) || die "无法创建临时目录"
+trap 'rm -rf -- "$tmpdir"' EXIT
+manifest="$tmpdir/$MANIFEST_ASSET"
 
 # ---------------------------------------------------------------------------
 # 拉取精简 manifest（必需；不从 asset 名降级，避免误装已移除的旧包）
@@ -185,8 +177,7 @@ tag=${location#"$RELEASES/tag/"}
 [[ "$tag" != "$location" && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "无法识别最新发布版本"
 DOWNLOAD_BASE="$RELEASES/download/$tag"
 
-# 并行数组：应用信息、源码 revision、实际 Electron 版本，顺序即 apps.json
-AID=(); ASLUG=(); ANAME=(); AURL=(); AREV=(); AEVER=()
+AID=(); ASLUG=(); ANAME=()
 fetch_manifest || die "无法获取 ${MANIFEST_ASSET}（release 不完整或下载失败）"
 
 # ---------------------------------------------------------------------------
@@ -196,7 +187,7 @@ fetch_manifest || die "无法获取 ${MANIFEST_ASSET}（release 不完整或下�
 if (( do_list )); then
   echo "可安装应用:"
   for k in "${!ASLUG[@]}"; do
-    printf '  %-12s %-16s %s — %s\n' "${AID[$k]}" "${ASLUG[$k]}" "${ANAME[$k]}" "${AURL[$k]}"
+    printf '  %-12s %-16s %s — %s\n' "${AID[$k]}" "${ASLUG[$k]}" "${ANAME[$k]}" "$(manifest_field "$k.url")"
   done
   exit 0
 fi
@@ -214,19 +205,19 @@ fetch_checksums || die "无法获取 ${CHECKSUM_ASSET}，拒绝安装未校验�
 
 sel_idx=()
 if [[ ${#want_ids[@]} -eq 0 ]]; then
-  for k in "${!ASLUG[@]}"; do sel_idx+=("$k"); done
+  sel_idx=("${!ASLUG[@]}")
 else
   for w in "${want_ids[@]}"; do
     matched=0
-    if [[ "$w" =~ ^[0-9]+$ ]]; then
-      for k in "${!ASLUG[@]}"; do
-        [[ "${AID[$k]}" == "$w" ]] && { add_idx "$k"; matched=1; }
-      done
-    else
-      for k in "${!ASLUG[@]}"; do
-        case "${ASLUG[$k]}" in *"$w"*) add_idx "$k"; matched=1 ;; esac
-      done
-    fi
+    for k in "${!ASLUG[@]}"; do
+      if [[ "$w" =~ ^[0-9]+$ ]]; then
+        [[ "${AID[$k]}" == "$w" ]] || continue
+      else
+        [[ "${ASLUG[$k]}" == *"$w"* ]] || continue
+      fi
+      add_idx "$k"
+      matched=1
+    done
     (( matched )) || die "未知 app: '$w'。用 './install.sh --list' 查看可选项。"
   done
 fi
@@ -238,14 +229,9 @@ fi
 install_one() {
   local k="$1"
   local id="${AID[$k]}" slug="${ASLUG[$k]}" name="${ANAME[$k]}"
-  local revision="${AREV[$k]}" electron_version="${AEVER[$k]}"
   local zip="${id}-${slug}${ASSET_SUFFIX}"
-  local dest="$tmpdir/$zip" url extract_dir
-
-  if is_current "$name" "$revision" "$electron_version"; then
-    echo "[$name] 已是最新 ($electron_version)，跳过。用 --force 强制重装。"
-    return 0
-  fi
+  local dest="$package_dir/$zip" extract_dir="$package_dir/app" url
+  mkdir -p "$extract_dir" || return 1
 
   echo ""
   echo "[$name] 下载 $zip ..."
@@ -256,11 +242,10 @@ install_one() {
   verify_zip "$zip" "$dest" || return 1
 
   echo "[$name] 解压并安装..."
-  extract_dir="$tmpdir/${zip%.zip}"
-  mkdir -p "$extract_dir"
   if ! unzip -qo "$dest" -d "$extract_dir"; then
     echo "[$name] 解压失败，跳过"; return 1
   fi
+  rm -f -- "$dest" || return 1
   if [[ -f "$extract_dir/install.sh" ]]; then
     ( cd "$extract_dir" && CLOUD_GAMES_DEST_BASE="$dest_base" bash install.sh )
   else
@@ -271,8 +256,11 @@ install_one() {
 echo ""
 echo "准备安装 ${#sel_idx[@]} 个应用..."
 fail=0
+package_dir="$tmpdir/package"
 for k in "${sel_idx[@]}"; do
+  if skip_if_current "$k"; then continue; fi
   install_one "$k" || fail=$((fail + 1))
+  rm -rf -- "$package_dir"
 done
 
 echo ""

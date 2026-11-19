@@ -36,7 +36,7 @@ fi
 tmp="$dest_base/.${name}.tmp.$$"
 rm -rf "$tmp"
 trap 'rm -rf "$tmp"' EXIT
-cp -R "$app" "$tmp"
+cp -cR "$app" "$tmp"
 rm -rf "$dest"
 mv "$tmp" "$dest"
 if [ -n "$previous" ]; then rm -rf "$previous"; fi

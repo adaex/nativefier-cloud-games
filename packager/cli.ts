@@ -1,9 +1,10 @@
 import fs from 'fs';
 import path from 'path';
-import { build, deriveSlug, readAppName, refreshIcon, repoRoot, type AppConfig, type BuildResult } from './build.ts';
+import { build, deriveSlug, getBuildVersion, readAppName, refreshIcon, repoRoot, type AppConfig, type BuildResult } from './build.ts';
 
-/** 构建前静态校验：不依赖网络，尽早拦截配置错误，避免浪费昂贵的构建 */
-function preflight(apps: AppConfig[]): void {
+/** 保留校验过的 slug，供后续打包和生成清单使用 */
+function preflight(apps: AppConfig[]) {
+  const validated: (AppConfig & { slug: string })[] = [];
   const errors: string[] = [];
   const idSeen = new Map<number, number>(); // id → 首次出现的下标
   const slugSeen = new Map<string, number>(); // slug → 首次出现的下标
@@ -33,7 +34,7 @@ function preflight(apps: AppConfig[]): void {
         errors.push(`${tag} (id=${app.id}): url 协议必须是 http(s)，实际为 ${u.protocol}`);
         return;
       }
-      slug = deriveSlug(app.url);
+      slug = deriveSlug(u);
     } catch (e) {
       errors.push(`${tag} (id=${app.id}): url 非法 (${(e as Error).message})`);
       return;
@@ -43,11 +44,13 @@ function preflight(apps: AppConfig[]): void {
     } else {
       slugSeen.set(slug, i);
     }
+    validated.push({ ...app, slug });
   });
   if (errors.length > 0) {
     console.error(`❌ 配置校验失败:\n${errors.map((e) => `  - ${e}`).join('\n')}`);
     process.exit(1);
   }
+  return validated;
 }
 
 async function main() {
@@ -55,19 +58,19 @@ async function main() {
   const mode = ['--refresh-icons', '--cached-icons'].includes(args[0]) ? args.shift() : undefined;
   const configPath = args[0] ?? path.join(repoRoot, 'apps.json');
 
-  let apps: AppConfig[];
+  let config: AppConfig[];
   try {
-    apps = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } catch (e) {
     console.error(`❌ 无法读取配置 (${configPath}):`, (e as Error).message);
     process.exit(1);
   }
-  if (!Array.isArray(apps) || apps.length === 0) {
+  if (!Array.isArray(config) || config.length === 0) {
     console.error(`❌ 配置 ${configPath} 必须是非空数组`);
     process.exit(1);
   }
 
-  preflight(apps);
+  const apps = preflight(config);
   if (mode !== '--cached-icons') {
     await Promise.all(apps.map(refreshIcon));
   }
@@ -90,10 +93,11 @@ async function main() {
   fs.rmSync(distDir, { recursive: true, force: true });
 
   // 串行复用 Electron 下载缓存；任一应用失败都直接终止，CI 不进入发布步骤
+  const version = getBuildVersion();
   const results: BuildResult[] = [];
   for (const [i, app] of namedApps.entries()) {
     console.log(`[${i + 1}/${namedApps.length}] id=${app.id}`);
-    results.push(await build(app));
+    results.push(await build(app, version));
   }
 
   // 写内部与对外 manifest，供 CI 定位产物和生成 release notes

@@ -48,7 +48,7 @@ bundle ID 固定为 `io.github.adaex.cloudgames.{id}`。每次构建先从 App S
 - 必须在请求单实例锁之前，按 id 设置独立的 `userData`，否则不同应用会共享 session、cookie 和缓存，单实例锁也会互相影响
 - User-Agent 去掉 Electron 和应用名段，避免云游戏站点因检测到你不是普通 Chrome 而降级或拒绝服务
 - 窗口没有标签页和返回导航；弹窗和主页面的外站跳转交给系统浏览器，只有同主域的 HTTP(S) 地址能在主页面打开。内嵌登录框的重定向不触发外部浏览器
-- 主域判断使用常见公共后缀近似；新增使用其他公共后缀的应用时，先核对导航放行范围
+- 主域判断和构建时生成 slug 共用 `packager/template/compound-tlds.json` 中的复合后缀。新增后缀时，核对应用的 slug 和站内导航范围
 - 外部页面按不可信内容处理，保持 `contextIsolation: true`、`nodeIntegration: false`
 
 ## 验证

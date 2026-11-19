@@ -1,10 +1,7 @@
 const { app, BrowserWindow, Menu, shell } = require('electron');
-const fs = require('fs');
 const path = require('path');
-
-const config = JSON.parse(
-  fs.readFileSync(path.join(__dirname, 'app.json'), 'utf8'),
-);
+const config = require('./app.json');
+const compoundTlds = require('./compound-tlds.json');
 
 app.commandLine.appendSwitch('lang', 'zh-CN');
 
@@ -30,12 +27,10 @@ function cleanUserAgent() {
 // 主域（eTLD+1 近似）：will-navigate 用它判断「站内」。无 PSL，对 com.cn 等
 // 常见复合 TLD 取后三段，其余取后两段。mihoyo.com 系登录域（passport.mihoyo.com
 // 等）与主站同主域，不会被误判为外站。
-const COMPOUND_TLDS = ['com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
-  'com.hk', 'com.tw', 'co.jp', 'or.jp', 'co.uk', 'org.uk', 'com.au', 'com.br'];
 function baseDomain(host) {
   const parts = host.split('.');
   const last2 = parts.slice(-2).join('.');
-  const n = parts.length > 2 && COMPOUND_TLDS.includes(last2) ? 3 : 2;
+  const n = parts.length > 2 && compoundTlds.includes(last2) ? 3 : 2;
   return parts.slice(-n).join('.');
 }
 const SITE_BASE = baseDomain(new URL(config.url).hostname);
@@ -122,7 +117,6 @@ function createWindow() {
   });
 
   win.loadURL(config.url, { userAgent: ua });
-  return win;
 }
 
 app.whenReady().then(() => {
