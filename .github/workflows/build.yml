@@ -10,26 +10,36 @@ permissions:
 
 # 同一 Release 的构建与上传必须串行，避免定时和手动运行交叉覆盖 asset
 concurrency:
-  group: build-release
+  group: build-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
+    if: github.ref_type == 'branch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # 上次可能已推送图标提交；重跑时从分支当前版本继续
+          ref: ${{ github.ref }}
 
       - uses: actions/setup-node@v7
         with:
           node-version: 26.13
           cache: yarn
 
+      - name: Test installer
+        run: bash tests/install.sh
+
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
       - name: Get Electron version
         id: electron
-        run: echo "version=$(npm view electron version)" >> "$GITHUB_OUTPUT"
+        run: |
+          version=$(npm view electron version)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { printf '无效的 Electron 版本：%s\n' "$version" >&2; exit 1; }
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       # Electron 二进制（~100MB）按版本缓存，避免每次全量下载
       - uses: actions/cache@v6
@@ -37,8 +47,20 @@ jobs:
           path: ~/Library/Caches/electron
           key: electron-${{ steps.electron.outputs.version }}
 
+      - name: Refresh App Store icons
+        run: node packager/cli.ts --refresh-icons
+
+      - name: Commit changed icons
+        if: github.ref_name == github.event.repository.default_branch
+        run: |
+          git add -- icons/
+          if ! git diff --cached --quiet -- icons/; then
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore: 更新 App Store 图标' -- icons/
+            git push origin "HEAD:$GITHUB_REF"
+          fi
+
       - name: Build apps
-        run: node packager/cli.ts
+        run: node packager/cli.ts --cached-icons
         env:
           ELECTRON_VERSION: ${{ steps.electron.outputs.version }}
 
@@ -48,9 +70,9 @@ jobs:
         run: node -e "const m=require('./dist/manifest.json'); if(!Array.isArray(m)||m.length===0){console.error('❌ dist/manifest.json 为空或缺失');process.exit(1)}"
 
       - name: Zip apps
+        if: github.ref_name == github.event.repository.default_branch
         run: |
           set -euo pipefail
-          # install.sh 已由构建阶段生成在 $app_dir 内，这里只负责打 zip
           # zip 名用 id-slug（数字 id 防撞 + 域名 slug 可读）
           while IFS=$'\t' read -r app_id app_slug app_dir; do
             app=$(find "$app_dir" -maxdepth 1 -name "*.app" -type d | head -1)
@@ -60,6 +82,7 @@ jobs:
           done < <(node -e "for(const a of require('./dist/manifest.json')) process.stdout.write(a.id+'\t'+a.slug+'\t'+a.appPaths[0]+'\n')")
 
       - name: Create Release
+        if: github.ref_name == github.event.repository.default_branch
         env:
           GH_TOKEN: ${{ github.token }}
           ELECTRON_VER: ${{ steps.electron.outputs.version }}
@@ -91,10 +114,9 @@ jobs:
           # zip 的 SHA256 校验值，安装器下载后校验完整性（镜像下载场景的防篡改手段）
           (cd dist && shasum -a 256 *.zip > checksums.txt)
 
-          # 已有 tag 就地更新，asset 用 --clobber 覆盖；构建失败不会执行本步骤
-          if gh release view "$tag" > /dev/null 2>&1; then
-            gh release edit "$tag" --title "$tag" --notes-file /tmp/release-notes.md --latest
-          else
-            gh release create "$tag" --title "$tag" --notes-file /tmp/release-notes.md --latest
+          # 新版本先建草稿；已有版本（含上次上传失败留下的草稿）就地更新
+          if ! gh release view "$tag" > /dev/null 2>&1; then
+            gh release create "$tag" --draft --target "$(git rev-parse HEAD)" --title "$tag" --notes-file /tmp/release-notes.md
           fi
           gh release upload "$tag" dist/*.zip dist/release-manifest.json dist/checksums.txt --clobber
+          gh release edit "$tag" --draft=false --latest --title "$tag" --notes-file /tmp/release-notes.md

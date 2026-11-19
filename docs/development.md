@@ -15,7 +15,7 @@ yarn build
 
 `yarn build-and-install` 会构建全部应用，再逐个运行产物中的安装脚本，替换本机已安装的同 bundle id 应用；任一安装失败都会以非 0 退出
 
-构建需要访问 App Store 和 npm，并下载 Electron。默认查询 npm 上的最新 Electron 版本，可通过 `ELECTRON_VERSION` 固定版本；稳定版列表见 <https://releases.electronjs.org/release?channel=stable>
+构建会访问 App Store 刷新图标；已有本地副本时，商店不可用不影响打包。默认查询 npm 上的最新 Electron 版本并下载 Electron，可通过 `ELECTRON_VERSION` 固定版本；稳定版列表见 <https://releases.electronjs.org/release?channel=stable>
 
 直接依赖只需声明 `@electron/packager`，Electron 不加入本地依赖。`resolutions` 中的 `glob`、`minimatch` 用于覆盖 `@electron/asar` 尚未收紧的漏洞版本；上游范围修复且审计不再需要覆盖时，应删除这两条
 
@@ -29,11 +29,13 @@ yarn build
 
 `slug` 不在配置中维护，而是由 `packager/build.ts` 从 URL 域名派生，例如 `ys.mihoyo.com` 对应 `ys-mihoyo`。它用于可读的 zip 文件名和安装器选应用；不要把它当作内部唯一标识
 
-bundle ID 固定为 `io.github.adaex.cloudgames.{id}`。显示名与图标在构建时通过 iTunes Lookup API 获取，显示名会截断常见营销后缀，不在配置中硬编码
+bundle ID 固定为 `io.github.adaex.cloudgames.{id}`。每次构建先从 App Store 获取当前显示名和图标，以便跟随节日换图。`icons/<id>.png` 保存最近可用的原图，`icons/<id>.txt` 保存去掉营销后缀的显示名。新图必须是请求的 1024×1024 PNG，且能转换成 macOS 图标，才会替换旧图；内容相同不改文件。商店不可用、返回小尺寸占位图或转换失败时沿用本地副本；新应用没有副本时会报错
+
+本地 `yarn build` 会刷新这些文件，但不会自动提交。CI 将刷新和打包分开：`--refresh-icons` 只更新本地副本，提交变更后用 `--cached-icons` 从同一份副本打包，避免两次下载到不同的图标
 
 ## 构建行为
 
-`packager/cli.ts` 在构建前拦截非对象条目、重复 id、slug 冲突、非正安全整数 id、非法 URL 和非 HTTP(S) 协议；构建后按 Unicode 规范化且不区分大小写拦截重复显示名，避免安装时互相覆盖
+`packager/cli.ts` 在构建前拦截非对象条目、重复 id、slug 冲突、非正安全整数 id、非法 URL 和非 HTTP(S) 协议；各应用并发刷新图标，显示名确定后立即检查是否重名（按 Unicode 规范化且不区分大小写）。有冲突就停止，不提交图标，也不打包
 
 所有应用串行构建，以复用 Electron 下载缓存。任一应用失败就以非 0 退出，不写 manifest；只有全部成功才生成 `dist/manifest.json`，CI 也只在全部成功后进入发布步骤
 
@@ -45,7 +47,7 @@ bundle ID 固定为 `io.github.adaex.cloudgames.{id}`。显示名与图标在构
 
 - 必须在请求单实例锁之前，按 id 设置独立的 `userData`，否则不同应用会共享 session、cookie 和缓存，单实例锁也会互相影响
 - User-Agent 去掉 Electron 和应用名段，避免云游戏站点因检测到你不是普通 Chrome 而降级或拒绝服务
-- 窗口没有标签页和返回导航；弹窗和外站跳转交给系统浏览器，页面内跳转与服务器重定向仅限 http(s) 同主域
+- 窗口没有标签页和返回导航；弹窗和主页面的外站跳转交给系统浏览器，只有同主域的 HTTP(S) 地址能在主页面打开。内嵌登录框的重定向不触发外部浏览器
 - 主域判断使用常见公共后缀近似；新增使用其他公共后缀的应用时，先核对导航放行范围
 - 外部页面按不可信内容处理，保持 `contextIsolation: true`、`nodeIntegration: false`
 

@@ -92,12 +92,12 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  // 页面内跳转与服务器重定向共用同一限制：仅 http(s) 同主域留在客户端，
-  // 外站交给系统浏览器，其他协议直接拒绝，避免全屏窗口进入无返回手段的页面
-  const handleNavigation = (e, url) => {
+  // 只处理主页面的导航，不把内嵌登录框的重定向送到系统浏览器
+  const handleNavigation = (e) => {
+    if (!e.isMainFrame) return;
     let target;
     try {
-      target = new URL(url);
+      target = new URL(e.url);
     } catch {
       e.preventDefault();
       return;

@@ -18,7 +18,7 @@
 set -euo pipefail
 
 REPO="adaex/nativefier-cloud-games"
-DOWNLOAD_BASE="https://github.com/$REPO/releases/latest/download"
+RELEASES="https://github.com/$REPO/releases"
 MIRROR="https://v6.gh-proxy.org"
 ASSET_SUFFIX="-darwin-arm64.zip"
 MANIFEST_ASSET="release-manifest.json"  # CI 上传的精简 manifest（id/slug/名称/URL，权威顺序=apps.json）
@@ -42,7 +42,7 @@ print_help() {
   -l, --list     列出可安装的应用（id + slug + 名称 + 网址）后退出
   -f, --force    已装同版本也强制重装（默认跳过）
   -h, --help     显示本帮助
-      --mirror   通过镜像下载 (https://v6.gh-proxy.org)，国内网络更快
+      --mirror   通过镜像下载 zip，版本和清单仍从 GitHub 获取
       --no-mirror  直连 GitHub（默认）
 
 远程一行安装:
@@ -62,10 +62,8 @@ add_idx() {
 # 下载并解析精简 manifest（权威源，顺序 = apps.json）；
 # 成功填充应用信息、源码 revision 和实际 Electron 版本，失败返回 1
 fetch_manifest() {
-  local mf="$tmpdir/$MANIFEST_ASSET" url j=0 id slug name murl rev ever
-  url="$DOWNLOAD_BASE/$MANIFEST_ASSET"
-  (( use_mirror )) && url="$MIRROR/$url"
-  curl -fsSL "$url" -o "$mf" || return 1
+  local mf="$tmpdir/$MANIFEST_ASSET" j=0 id slug name murl rev ever
+  curl -fsSL "$DOWNLOAD_BASE/$MANIFEST_ASSET" -o "$mf" || return 1
   [[ -f "$mf" ]] || return 1
   # 循环条件用「第 j 项对象是否存在」，而非某字段提取成功——
   # 否则某项缺 slug 会让循环提前终止、静默丢弃其后所有 app。
@@ -102,12 +100,12 @@ verify_zip() {
   local zip="$1" file="$2" expected actual
   expected=$(awk -v f="$zip" '$2 == f {print $1}' "$tmpdir/$CHECKSUM_ASSET")
   if [[ -z "$expected" ]]; then
-    echo "校验清单中无 $zip，拒绝安装（release 不完整）" >&2
+    echo "校验清单中无 ${zip}，拒绝安装（release 不完整）" >&2
     return 1
   fi
   actual=$(shasum -a 256 "$file" | awk '{print $1}')
   if [[ "$expected" != "$actual" ]]; then
-    echo "$zip 校验失败（期望 $expected，实际 $actual），拒绝安装——文件可能被篡改" >&2
+    echo "$zip 校验失败（期望 ${expected}，实际 ${actual}），拒绝安装——文件可能被篡改" >&2
     return 1
   fi
 }
@@ -180,6 +178,12 @@ tmpdir=$(mktemp -d) || die "无法创建临时目录"
 # ---------------------------------------------------------------------------
 # 拉取精简 manifest（必需；不从 asset 名降级，避免误装已移除的旧包）
 # ---------------------------------------------------------------------------
+
+# 只向 GitHub 查询一次 latest；本次所有下载都使用同一个 tag
+location=$(curl -fsSI --no-location -o /dev/null -w '%{redirect_url}' "$RELEASES/latest") || die "无法查询最新发布版本"
+tag=${location#"$RELEASES/tag/"}
+[[ "$tag" != "$location" && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "无法识别最新发布版本"
+DOWNLOAD_BASE="$RELEASES/download/$tag"
 
 # 并行数组：应用信息、源码 revision、实际 Electron 版本，顺序即 apps.json
 AID=(); ASLUG=(); ANAME=(); AURL=(); AREV=(); AEVER=()

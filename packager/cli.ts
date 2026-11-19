@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { build, deriveSlug, type AppConfig, type BuildResult } from './build.ts';
+import { build, deriveSlug, readAppName, refreshIcon, repoRoot, type AppConfig, type BuildResult } from './build.ts';
 
 /** 构建前静态校验：不依赖网络，尽早拦截配置错误，避免浪费昂贵的构建 */
 function preflight(apps: AppConfig[]): void {
@@ -51,8 +51,9 @@ function preflight(apps: AppConfig[]): void {
 }
 
 async function main() {
-  const repoRoot = path.join(import.meta.dirname, '..');
-  const configPath = process.argv[2] ?? path.join(repoRoot, 'apps.json');
+  const args = process.argv.slice(2);
+  const mode = ['--refresh-icons', '--cached-icons'].includes(args[0]) ? args.shift() : undefined;
+  const configPath = args[0] ?? path.join(repoRoot, 'apps.json');
 
   let apps: AppConfig[];
   try {
@@ -67,6 +68,22 @@ async function main() {
   }
 
   preflight(apps);
+  if (mode !== '--cached-icons') {
+    await Promise.all(apps.map(refreshIcon));
+  }
+  // 刷新后名称已确定，在提交图标或打包前检查安装目录是否重名
+  const nameSeen = new Map<string, number>();
+  const namedApps = apps.map(app => {
+    const name = readAppName(app.id);
+    const key = name.normalize('NFKC').toLowerCase();
+    const previousId = nameSeen.get(key);
+    if (previousId !== undefined) {
+      throw new Error(`名称冲突：${name}（id=${previousId} 与 id=${app.id}），安装目录会互相覆盖`);
+    }
+    nameSeen.set(key, app.id);
+    return { ...app, name };
+  });
+  if (mode === '--refresh-icons') return;
 
   // 只保留本次产物，避免移除应用后，build-and-install 误装历史包
   const distDir = path.join(repoRoot, 'dist');
@@ -74,21 +91,9 @@ async function main() {
 
   // 串行复用 Electron 下载缓存；任一应用失败都直接终止，CI 不进入发布步骤
   const results: BuildResult[] = [];
-  for (const [i, app] of apps.entries()) {
-    console.log(`[${i + 1}/${apps.length}] id=${app.id}`);
+  for (const [i, app] of namedApps.entries()) {
+    console.log(`[${i + 1}/${namedApps.length}] id=${app.id}`);
     results.push(await build(app));
-  }
-
-  // 构建后校验：name 来自 App Store，只能此时得知。同名应用会互相替换安装；
-  // macOS 默认文件系统不区分大小写，Unicode 规范化后再按小写检测冲突。
-  const nameSeen = new Map<string, number>();
-  for (const r of results) {
-    const key = r.name.normalize('NFKC').toLowerCase();
-    const previousId = nameSeen.get(key);
-    if (previousId !== undefined) {
-      throw new Error(`name 冲突: "${r.name}"（id=${previousId} 与 id=${r.id}），安装目录会互相覆盖`);
-    }
-    nameSeen.set(key, r.id);
   }
 
   // 写内部与对外 manifest，供 CI 定位产物和生成 release notes

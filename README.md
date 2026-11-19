@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/adaex/nativefier-cloud-games/main/i
 
 - `-l, --list`：列出可安装的应用
 - `-f, --force`：已装同版本也强制重装（默认已装同版本时跳过下载）
-- `--mirror` / `--no-mirror`：启用／禁用镜像下载，默认直连 GitHub
+- `--mirror` / `--no-mirror`：只切换安装包的下载来源；版本与应用清单始终从 GitHub 获取，默认直连
 - `-h, --help`：查看完整用法
 
 安装器会下载对应 zip、用 release 的 `checksums.txt` 校验完整性（防止镜像下载被篡改）、去除 macOS 隔离标记，并复制到 `/Applications`（无管理员权限时装进 `~/Applications`）。仅支持 macOS arm64（`darwin-arm64`）

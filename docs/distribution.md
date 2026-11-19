@@ -4,7 +4,9 @@
 
 ## 发布链路
 
-`.github/workflows/build.yml` 定时运行，也支持 `workflow_dispatch`。同一工作流串行执行，避免并发运行交叉覆盖 Release asset。CI 构建 `apps.json` 中的全部应用，以 `v{Electron 版本}` 为 tag 发布 `darwin-arm64` 产物
+`.github/workflows/build.yml` 定时运行，也支持手动运行。每个分支的任务串行执行；功能分支只验证构建和安装脚本，不推送图标，也不压缩或发布安装包。任务开始时检出所选分支当前的提交，npm 未返回有效的 Electron 稳定版本号就停止
+
+默认分支先刷新 `icons/`，只有图标或配套显示名有变化时才提交并推回。随后用当前提交构建全部应用，以 `v{Electron 版本}` 为 tag 发布 `darwin-arm64` 产物。即使 Electron 版本没变，安装器也能识别新图标
 
 | 产物 | 用途 |
 | --- | --- |
@@ -16,7 +18,7 @@
 
 ## 发布策略
 
-禁止为了发布而删除再重建 release：这会造成 release 暂时不存在。已有 tag 用 `gh release edit` 更新说明，asset 用 `gh release upload --clobber` 覆盖
+新版本先建草稿，文件全部上传成功后才公开并标为最新版。已有公开版本就地更新，不删除或重建 Release。`gh release upload --clobber` 会先删除同名旧文件；如果上传中断，公开版本可能缺包或校验不一致，用户自己重试不能修复。维护者应从默认分支重新发起工作流，补齐全部文件后再让用户重试；已有的图标提交和未发布草稿都可复用
 
 构建器串行构建全部应用，任一失败就以非 0 退出，CI 不进入发布步骤，旧 release 保持可用。全部成功后才上传本次全部 zip 和 manifest，不读取或合并历史 manifest，也不携带旧包
 
@@ -27,9 +29,9 @@ CI 和安装器必须使用同一个实际 asset 名 `release-manifest.json`。`
 | 安装器 | 职责 |
 | --- | --- |
 | 仓库根 `install.sh` | 远程分发器：获取 release、选择并下载 zip、校验、解压，再调用包内安装器 |
-| zip 包内 `install.sh` | 单包安装器：由 `packager/build.ts` 的 `writeInstallScript` 生成，去除 quarantine，并替换已安装应用 |
+| zip 包内 `install.sh` | 单包安装器：构建时从 `packager/install.sh` 原样复制，去除 quarantine，并替换已安装应用 |
 
-包内安装器优先写入 `/Applications`，无写权限时写入 `~/Applications`。它只替换 bundle id 相同的已安装应用，遇到同名但 bundle id 不同的应用会拒绝覆盖。复制先在目标卷的临时目录完成，再替换旧应用，避免复制中途失败时破坏旧版本；替换不是崩溃原子操作，进程在删除旧应用后、移动新应用前被强制终止时仍需重新安装
+包内安装器优先写入 `/Applications`，无写权限时写入 `~/Applications`。同名应用按 bundle id 确认后替换；目标名称不存在时才在该安装目录查找同 bundle id 旧包。若只有一个，新包就位后再移除旧名应用；若有多个，提示用户整理，不猜测应删哪一个。不会覆盖同名的其他应用。复制先在目标卷的临时目录完成，再替换旧应用，避免复制中途失败时破坏旧版本；替换不是崩溃原子操作，进程在删除旧应用后、移动新应用前被强制终止时仍需重新安装
 
 ## 根安装器约定
 
@@ -37,7 +39,7 @@ CI 和安装器必须使用同一个实际 asset 名 `release-manifest.json`。`
 - 无位置参数时安装全部应用；纯数字参数按 id 精准匹配，其余参数按 slug 子串模糊匹配
 - 已安装应用的 Electron 版本与 manifest 一致，且源码 `CloudGamesRevision` 与 manifest 的 `revision` 一致时，默认跳过下载；缺少字段或值不同都会重装，`--force` 强制重装
 - 必须获取 `checksums.txt`，zip 匹配清单才能安装；下载失败、文件缺失或校验不一致都拒绝安装
-- 下载只使用 macOS 自带的 `curl`，通过 `releases/latest/download/<文件名>` 获取固定名称的 asset，不依赖 `gh` 或 GitHub API 配额；即使 zip 和 manifest 使用 `--mirror`，校验清单也始终直连 GitHub，避免镜像同时篡改文件和校验值
+- 下载只使用 macOS 自带的 `curl`。每次运行先直连 GitHub，从 `releases/latest` 的重定向取得 tag，之后只下载该 tag 下的文件，不依赖 `gh` 或 GitHub API 配额。`--mirror` 只代理 zip，版本、应用清单和校验清单都取自 GitHub，避免镜像缓存的旧清单导致跳过更新
 - 脚本必须自包含，支持 `curl ... | bash`，不能依赖仓库中的其他文件
 - 必须兼容 macOS 自带的 bash 3.2：不用关联数组、`mapfile`，并避免 `set -u` 下直接展开空数组；JSON 解析使用 macOS 自带的 `plutil`，不依赖 Python
 
@@ -47,7 +49,7 @@ CI 和安装器必须使用同一个实际 asset 名 `release-manifest.json`。`
 
 ## 验证
 
-修改根安装器后至少运行：
+修改包内安装器后，运行 `bash tests/install.sh` 在临时目录验证改名、同名更新和多份旧包的处理，并确认构建产物中的 `install.sh` 可直接执行。修改根安装器后至少运行：
 
 ```bash
 bash -n install.sh

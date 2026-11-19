@@ -4,6 +4,9 @@ import os from 'os';
 import path from 'path';
 import { packager } from '@electron/packager';
 
+export const repoRoot = path.join(import.meta.dirname, '..');
+const iconsDir = path.join(repoRoot, 'icons');
+
 const NPM_REGISTRY = process.env.CI
   ? 'https://registry.npmjs.org'
   : 'https://registry.npmmirror.com';
@@ -84,10 +87,10 @@ let cachedSourceRevision: string | undefined;
 
 function getSourceRevision(): string {
   if (!cachedSourceRevision) {
-    cachedSourceRevision = process.env.GITHUB_SHA || execFileSync(
+    cachedSourceRevision = execFileSync(
       'git',
       ['rev-parse', 'HEAD'],
-      { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8' },
+      { cwd: repoRoot, encoding: 'utf8' },
     ).trim();
   }
   return cachedSourceRevision;
@@ -144,73 +147,52 @@ async function fetchAppMeta(appId: number, country: string): Promise<AppMeta> {
   const app = data.results[0];
   const artwork = app.artworkUrl512 ?? app.artworkUrl100;
   if (!artwork) throw new Error(`appId=${appId} 未返回图标地址`);
-  const iconUrl = artwork.replace(/\/\d+x\d+bb\.(jpg|png)$/, '/1024x1024bb.png');
-  if (iconUrl === artwork) {
-    throw new Error(`图标地址格式异常，无法改写为 1024px PNG: ${artwork}`);
-  }
+  const sizeSuffix = /\/\d+x\d+bb\.(jpg|png)$/;
+  if (!sizeSuffix.test(artwork)) throw new Error(`无法识别 App Store 图标地址: ${artwork}`);
+  const iconUrl = artwork.replace(sizeSuffix, '/1024x1024bb.png');
   return { name: shortName(app.trackName), iconUrl };
 }
 
-/** 下载图标到指定 PNG 路径 */
-async function downloadIcon(url: string, destPngPath: string): Promise<void> {
-  const buf = await fetchBuffer(url, 30000);
-  if (buf.length < 1024) throw new Error(`图标文件过小 (${buf.length} 字节)，疑似无效`);
-  fs.writeFileSync(destPngPath, buf);
-  log.ok(`图标下载完成: ${(buf.length / 1024).toFixed(0)} KB`);
+export function readAppName(id: number): string {
+  return fs.readFileSync(path.join(iconsDir, `${id}.txt`), 'utf8').trim();
 }
 
-/**
- * 在产物目录生成 install.sh：去隔离标记并复制到 /Applications。
- * 本地构建可双击直接运行，无需此脚本；它主要服务于 CI 下载包
- * （macOS 会给下载的文件打 quarantine，需去除才能通过 Gatekeeper）。
- */
-function writeInstallScript(appDir: string): void {
-  const script = [
-    '#!/usr/bin/env bash',
-    'set -euo pipefail',
-    '[[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || { echo "本安装器仅支持 macOS arm64"; exit 1; }',
-    'cd "$(dirname "$0")"',
-    'app=$(find . -maxdepth 1 -name "*.app" -type d | head -1)',
-    'if [ -z "$app" ]; then echo "未找到 .app"; exit 1; fi',
-    'name=$(basename "$app")',
-    'bundle_id=$(plutil -extract CFBundleIdentifier raw -o - -- "$app/Contents/Info.plist")',
-    'xattr -dr com.apple.quarantine "$app"',
-    '# 远程安装器传入已选定的目录；独立运行时自行选择',
-    'dest_base=${CLOUD_GAMES_DEST_BASE:-}',
-    'if [ -z "$dest_base" ]; then',
-    '  # 无 /Applications 写权限（非管理员）时装进 ~/Applications',
-    '  if [ -w /Applications ]; then dest_base=/Applications; else dest_base="$HOME/Applications"; fi',
-    'fi',
-    'mkdir -p "$dest_base"',
-    '# 先 cp 到同卷临时目录，成功后再 rm 旧的 + mv 就位',
-    '# 避免 rm 先于 cp——若 cp 中途失败（磁盘满/中断），旧安装仍完好',
-    'dest="$dest_base/$name"',
-    'if [ -e "$dest" ]; then',
-    '  installed_id=$(plutil -extract CFBundleIdentifier raw -o - -- "$dest/Contents/Info.plist" 2>/dev/null || true)',
-    '  if [ "$installed_id" != "$bundle_id" ]; then echo "拒绝替换 $dest：同名应用的 bundle id 不匹配"; exit 1; fi',
-    '  if [ ! -w "$dest" ]; then echo "无权限替换 $dest（属主可能是其他用户），请先手动删除"; exit 1; fi',
-    'fi',
-    'tmp="$dest_base/.${name}.tmp.$$"',
-    'rm -rf "$tmp"',
-    'trap \'rm -rf "$tmp"\' EXIT',
-    'cp -R "$app" "$tmp"',
-    'rm -rf "$dest"',
-    'mv "$tmp" "$dest"',
-    'echo "已安装: $dest"',
-    '',
-  ].join('\n');
-  const scriptPath = path.join(appDir, 'install.sh');
-  fs.writeFileSync(scriptPath, script);
-  fs.chmodSync(scriptPath, 0o755);
-  log.ok(`生成 install.sh`);
+export async function refreshIcon({ id, country = 'cn' }: AppConfig): Promise<void> {
+  const png = path.join(iconsDir, `${id}.png`);
+  const nameFile = path.join(iconsDir, `${id}.txt`);
+  using cleanup = new DisposableStack();
+  let candidate: string | undefined;
+  let name: string;
+  try {
+    const meta = await fetchAppMeta(id, country);
+    name = meta.name;
+    const bytes = await fetchBuffer(meta.iconUrl, 30000);
+    if (!fs.existsSync(png) || !fs.readFileSync(png).equals(bytes)) {
+      if (bytes.length < 24 || bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error('下载内容不是 PNG');
+      // 读原图宽高，避免 sips 把占位图放大
+      const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20);
+      if (width !== 1024 || height !== 1024) throw new Error(`图标应为 1024×1024，实际为 ${width}×${height}`);
+      fs.mkdirSync(iconsDir, { recursive: true });
+      const tmp = cleanup.use(fs.mkdtempDisposableSync(path.join(iconsDir, '.refresh-')));
+      candidate = path.join(tmp.path, 'icon.png');
+      fs.writeFileSync(candidate, bytes);
+      pngToIcns(candidate, tmp.path);
+    }
+  } catch (error) {
+    if (!fs.existsSync(png) || !fs.existsSync(nameFile)) throw error;
+    console.warn(`[${id}] 更新图标失败，沿用本地图标和名称：${(error as Error).message}`);
+    return;
+  }
+  if (candidate) fs.renameSync(candidate, png);
+  if (!fs.existsSync(nameFile) || fs.readFileSync(nameFile, 'utf8') !== `${name}\n`) {
+    fs.writeFileSync(nameFile, `${name}\n`);
+  }
 }
 
-export async function build(config: AppConfig): Promise<BuildResult> {
-  const repoRoot = path.join(import.meta.dirname, '..');
-  const id = config.id;
+export async function build(config: AppConfig & { name: string }): Promise<BuildResult> {
+  const { id, name } = config;
   const slug = deriveSlug(config.url);
   const bundleId = `io.github.adaex.cloudgames.${id}`;
-  const country = config.country ?? 'cn';
   const electronVersion = getElectronVersion();
   const revision = getSourceRevision();
   // 每个 app 独立输出目录，避免同名或大小写相近的名称争用目录
@@ -227,13 +209,6 @@ export async function build(config: AppConfig): Promise<BuildResult> {
     const pkgPath = path.join(sourceDir, 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
 
-    // 从 App Store 拉取名称与图标地址（id 即查询键）
-    log.info(`查询 App Store: id=${id} (${country})`);
-    const meta = await fetchAppMeta(id, country);
-    const name = meta.name;
-    const iconUrl = meta.iconUrl;
-    log.ok(`App Store 名称: ${name}`);
-
     // package.json：version 对齐 Electron；productName 设为真实名，使
     // app.getName() 返回真实名（菜单 About/Quit 显示真实名）。name 保持
     // ASCII id 以符合 npm 规范，app.getName() 优先读 productName。
@@ -247,10 +222,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
       JSON.stringify({ id, name, url: config.url }),
     );
 
-    // 图标：按 id 从 App Store 下载
-    const iconSrc = path.join(tmpDir, 'downloaded-icon.png');
-    await downloadIcon(iconUrl, iconSrc);
-    const icon = pngToIcns(iconSrc, tmpDir);
+    const icon = pngToIcns(path.join(iconsDir, `${id}.png`), tmpDir);
 
     log.info(`开始构建: ${name} (${id})`);
     const appPaths = await packager({
@@ -272,7 +244,7 @@ export async function build(config: AppConfig): Promise<BuildResult> {
 
     for (const p of appPaths) {
       log.ok(`输出: ${p}`);
-      writeInstallScript(p);
+      fs.copyFileSync(path.join(import.meta.dirname, 'install.sh'), path.join(p, 'install.sh'));
     }
     return { id, slug, name, url: config.url, electronVersion, revision, appPaths };
   } finally {
